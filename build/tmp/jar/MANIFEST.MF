@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Specification-Title: hcrpoints
+Specification-Vendor: Hydroceder
+Specification-Version: 1
+Implementation-Title: ds
+Implementation-Version: 1.2.0
+Implementation-Vendor: Hydroceder
+Implementation-Timestamp: 2026-05-23T18:09:44+0800
+

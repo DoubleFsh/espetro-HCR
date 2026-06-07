@@ -13,7 +13,6 @@ import net.minecraft.network.chat.Component;
  */
 public class TacticalMapConfigScreen extends Screen {
     private static final Component TITLE = Component.literal("战术地图配置");
-    private static final Component SCALE_LABEL = Component.literal("迷你地图缩放百分比：");
     private static final Component ATTACKER_COLOR_LABEL = Component.literal("攻方进度条颜色：");
     private static final Component DEFENDER_COLOR_LABEL = Component.literal("守方进度条颜色：");
     private static final Component SAVE_BUTTON = Component.literal("保存");
@@ -22,7 +21,6 @@ public class TacticalMapConfigScreen extends Screen {
     private final Screen parent;
     
     // 输入框控件
-    private EditBox scaleInput;
     private EditBox attackerColorInput;
     private EditBox defenderColorInput;
     
@@ -39,30 +37,14 @@ public class TacticalMapConfigScreen extends Screen {
     protected void init() {
         // 计算界面中心位置
         int centerX = this.width / 2;
-        int startY = this.height / 2 - 60;
-        
-        // 迷你地图缩放输入框
-        Component scaleInputComponent = Component.literal("scale_input");
-        this.scaleInput = new EditBox(
-            this.font,
-            centerX - 100,
-            startY + 20,
-            100,
-            20,
-            scaleInputComponent
-        );
-        this.scaleInput.setMaxLength(3);
-        this.scaleInput.setValue(String.valueOf(TacticalMapConfig.miniMapScale.get()));
-        this.scaleInput.setTooltip(Tooltip.create(Component.literal("输入25-100之间的数值")));
-        this.scaleInput.setFilter(s -> s.isEmpty() || s.matches("\\d*"));
-        this.addRenderableWidget(this.scaleInput);
+        int startY = this.height / 2 - 40;
         
         // 攻方颜色输入框
         Component attackerColorInputComponent = Component.literal("attacker_color_input");
         this.attackerColorInput = new EditBox(
             this.font,
             centerX - 100,
-            startY + 60,
+            startY + 20,
             100,
             20,
             attackerColorInputComponent
@@ -78,7 +60,7 @@ public class TacticalMapConfigScreen extends Screen {
         this.defenderColorInput = new EditBox(
             this.font,
             centerX - 100,
-            startY + 100,
+            startY + 60,
             100,
             20,
             defenderColorInputComponent
@@ -95,7 +77,7 @@ public class TacticalMapConfigScreen extends Screen {
                 this.saveConfig();
                 this.onClose();
             })
-            .bounds(centerX - 110, startY + 140, 100, 20)
+            .bounds(centerX - 110, startY + 100, 100, 20)
             .build()
         );
         
@@ -104,7 +86,7 @@ public class TacticalMapConfigScreen extends Screen {
             Button.builder(CANCEL_BUTTON, button -> {
                 this.onClose();
             })
-            .bounds(centerX + 10, startY + 140, 100, 20)
+            .bounds(centerX + 10, startY + 100, 100, 20)
             .build()
         );
         
@@ -122,38 +104,20 @@ public class TacticalMapConfigScreen extends Screen {
             this.font,
             TITLE,
             this.width / 2,
-            this.height / 2 - 80,
+            this.height / 2 - 60,
             0xFFFFFF
         );
         
         // 渲染标签
         int centerX = this.width / 2;
-        int startY = this.height / 2 - 60;
-        
-        // 缩放标签
-        guiGraphics.drawString(
-            this.font,
-            SCALE_LABEL,
-            centerX - 100,
-            startY,
-            0xFFFFFF,
-            false
-        );
-        guiGraphics.drawString(
-            this.font,
-            "%",
-            centerX + 5,
-            startY + 20,
-            0xFFFFFF,
-            false
-        );
+        int startY = this.height / 2 - 40;
         
         // 攻方颜色标签
         guiGraphics.drawString(
             this.font,
             ATTACKER_COLOR_LABEL,
             centerX - 100,
-            startY + 40,
+            startY,
             0xFFFFFF,
             false
         );
@@ -163,7 +127,7 @@ public class TacticalMapConfigScreen extends Screen {
             this.font,
             DEFENDER_COLOR_LABEL,
             centerX - 100,
-            startY + 80,
+            startY + 40,
             0xFFFFFF,
             false
         );
@@ -175,7 +139,6 @@ public class TacticalMapConfigScreen extends Screen {
     @Override
     public void tick() {
         // 更新输入框状态
-        this.scaleInput.tick();
         this.attackerColorInput.tick();
         this.defenderColorInput.tick();
         
@@ -187,27 +150,10 @@ public class TacticalMapConfigScreen extends Screen {
      * 更新保存按钮的状态
      */
     private void updateSaveButtonStatus() {
-        boolean isScaleValid = this.isScaleInputValid();
         boolean isAttackerColorValid = this.isColorInputValid(this.attackerColorInput.getValue());
         boolean isDefenderColorValid = this.isColorInputValid(this.defenderColorInput.getValue());
         
-        this.saveButton.active = isScaleValid && isAttackerColorValid && isDefenderColorValid;
-    }
-    
-    /**
-     * 检查缩放输入是否有效
-     */
-    private boolean isScaleInputValid() {
-        try {
-            String value = this.scaleInput.getValue();
-            if (value.isEmpty()) {
-                return false;
-            }
-            int scale = Integer.parseInt(value);
-            return scale >= 25 && scale <= 100;
-        } catch (NumberFormatException e) {
-            return false;
-        }
+        this.saveButton.active = isAttackerColorValid && isDefenderColorValid;
     }
     
     /**
@@ -230,16 +176,6 @@ public class TacticalMapConfigScreen extends Screen {
      * 保存配置
      */
     private void saveConfig() {
-        // 保存缩放配置
-        try {
-            int scale = Integer.parseInt(this.scaleInput.getValue());
-            if (scale >= 25 && scale <= 100) {
-                TacticalMapConfig.miniMapScale.set(scale);
-            }
-        } catch (NumberFormatException e) {
-            // 忽略无效输入
-        }
-        
         // 保存攻方颜色配置
         String attackerColor = this.attackerColorInput.getValue();
         if (this.isColorInputValid(attackerColor)) {

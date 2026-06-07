@@ -37,6 +37,9 @@ public class CapturePointManager {
     // 存储玩家名称的映射，键为UUID，值为玩家名称
     private final Map<UUID, String> playerNameMap;
     
+    // 存储玩家上一次同步时的队伍名称，用于检测原版team命令带来的队伍变化
+    private final Map<UUID, String> playerTeamNameMap;
+    
     // 存储玩家进入据点的时间，键为玩家UUID，值为进入时间（毫秒）
     private final Map<UUID, Long> playerEnterTime = new ConcurrentHashMap<>();
     
@@ -121,6 +124,7 @@ public class CapturePointManager {
     private CapturePointManager() {
         this.capturePoints = new ConcurrentHashMap<>();
         this.playerNameMap = new ConcurrentHashMap<>();
+        this.playerTeamNameMap = new ConcurrentHashMap<>();
         this.plannedPointsMap = new ConcurrentHashMap<>();
     }
     
@@ -1340,16 +1344,14 @@ public class CapturePointManager {
         }
         
         try {
-            List<CapturePoint.SerializableCapturePoint> serializedPoints = new ArrayList<>();
-            for (CapturePoint point : capturePoints.values()) {
-                // 行动模式下只同步当前批次的据点
-                if (ModConfig.enableOperationMode.get() && point.getBatch() != currentBatch) {
-                    continue;
-                }
-                serializedPoints.add(point.toSerializable());
+            MinecraftServer server = HCRPointsMod.getServer();
+            if (server == null) {
+                return;
             }
-            
-            SyncCapturePointsMessage.broadcastToAll(serializedPoints);
+
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                SyncCapturePointsMessage.sendToPlayer(player, getSerializablePointsForMap(player));
+            }
         } catch (Exception e) {
             ModLogger.error("同步据点数据到所有客户端时发生异常: " + e.getMessage());
         }
@@ -1374,6 +1376,109 @@ public class CapturePointManager {
         }
         return serializedPoints;
     }
+
+    /**
+     * 根据玩家攻守身份生成战术地图可见据点。
+     */
+    private List<CapturePoint.SerializableCapturePoint> getSerializablePointsForMap(ServerPlayer player) {
+        if (!ModConfig.enableOperationMode.get() || !operationModeRunning) {
+            return getAllSerializablePoints();
+        }
+
+        Team playerTeam = player.getTeam();
+        String playerTeamName = playerTeam != null ? playerTeam.getName() : "";
+        String attackerTeam = getAttackerTeam();
+        String defenderTeam = getDefenderTeam();
+
+        if (playerTeamName.equals(defenderTeam)) {
+            return getAllPlannedPointsForMap(defenderTeam);
+        }
+
+        if (playerTeamName.equals(attackerTeam)) {
+            return getAttackerVisiblePointsForMap(attackerTeam, defenderTeam);
+        }
+
+        return getCurrentBatchSerializablePoints();
+    }
+
+    private List<CapturePoint.SerializableCapturePoint> getAllPlannedPointsForMap(String defenderTeam) {
+        List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>();
+        for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
+            CapturePoint activePoint = capturePoints.get(plannedPoint.getName());
+            if (activePoint != null) {
+                points.add(activePoint.toSerializable());
+            } else {
+                points.add(serializableFromPlannedPoint(plannedPoint, defenderTeam));
+            }
+        }
+        points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
+                .thenComparing(point -> point.name));
+        return points;
+    }
+
+    private List<CapturePoint.SerializableCapturePoint> getAttackerVisiblePointsForMap(String attackerTeam, String defenderTeam) {
+        List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>();
+        for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
+            if (plannedPoint.getBatch() < currentBatch) {
+                points.add(serializableFromPlannedPoint(
+                        plannedPoint,
+                        attackerTeam,
+                        CaptureState.CAPTURED,
+                        DisplayState.CAPTURED,
+                        100
+                ));
+            } else if (plannedPoint.getBatch() == currentBatch) {
+                CapturePoint activePoint = capturePoints.get(plannedPoint.getName());
+                if (activePoint != null) {
+                    points.add(activePoint.toSerializable());
+                } else {
+                    points.add(serializableFromPlannedPoint(plannedPoint, defenderTeam));
+                }
+            }
+        }
+        points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
+                .thenComparing(point -> point.name));
+        return points;
+    }
+
+    private List<CapturePoint.SerializableCapturePoint> getCurrentBatchSerializablePoints() {
+        List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>();
+        for (CapturePoint point : capturePoints.values()) {
+            if (point.getBatch() == currentBatch) {
+                points.add(point.toSerializable());
+            }
+        }
+        points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
+                .thenComparing(point -> point.name));
+        return points;
+    }
+
+    private CapturePoint.SerializableCapturePoint serializableFromPlannedPoint(PlannedCapturePoint plannedPoint, String defaultCaptor) {
+        return serializableFromPlannedPoint(
+                plannedPoint,
+                defaultCaptor != null ? defaultCaptor : "",
+                CaptureState.CAPTURED,
+                DisplayState.CAPTURED,
+                100
+        );
+    }
+
+    private CapturePoint.SerializableCapturePoint serializableFromPlannedPoint(PlannedCapturePoint plannedPoint,
+                                                                              String captorName,
+                                                                              CaptureState state,
+                                                                              DisplayState displayState,
+                                                                              int progress) {
+        return new CapturePoint.SerializableCapturePoint(
+                plannedPoint.getName(),
+                plannedPoint.getPos1(),
+                plannedPoint.getPos2(),
+                plannedPoint.getBatch(),
+                state,
+                displayState,
+                captorName,
+                progress
+        );
+    }
     
     /**
      * 从服务器同步据点数据（完全替换）
@@ -1392,7 +1497,7 @@ public class CapturePointManager {
             
             // 重建据点数据
             for (CapturePoint.SerializableCapturePoint sp : serializedPoints) {
-                CapturePoint point = new CapturePoint(sp.name, sp.pos1, sp.pos2);
+                CapturePoint point = new CapturePoint(sp.name, sp.pos1, sp.pos2, sp.batch);
                 point.restoreFromSerializable(sp);
                 capturePoints.put(sp.name, point);
             }
@@ -1424,7 +1529,7 @@ public class CapturePointManager {
                     point.restoreFromSerializable(sp);
                 } else {
                     // 添加新的据点
-                    point = new CapturePoint(sp.name, sp.pos1, sp.pos2);
+                    point = new CapturePoint(sp.name, sp.pos1, sp.pos2, sp.batch);
                     point.restoreFromSerializable(sp);
                     capturePoints.put(sp.name, point);
                 }
@@ -1454,13 +1559,17 @@ public class CapturePointManager {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             UUID playerUUID = player.getUUID();
             String playerName = player.getName().getString();
+            Team playerTeam = player.getTeam();
+            String teamName = playerTeam != null ? playerTeam.getName() : "";
+            syncMapDataIfPlayerTeamChanged(player, teamName);
             
             // 创建玩家位置对象
             com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = new com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition(
                 player.getX(),
                 player.getY(),
                 player.getZ(),
-                playerName
+                playerName,
+                teamName
             );
             
             positions.put(playerUUID, pos);
@@ -1487,13 +1596,16 @@ public class CapturePointManager {
         for (ServerPlayer onlinePlayer : server.getPlayerList().getPlayers()) {
             UUID playerUUID = onlinePlayer.getUUID();
             String playerName = onlinePlayer.getName().getString();
+            Team playerTeam = onlinePlayer.getTeam();
+            String teamName = playerTeam != null ? playerTeam.getName() : "";
             
             // 创建玩家位置对象
             com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = new com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition(
                 onlinePlayer.getX(),
                 onlinePlayer.getY(),
                 onlinePlayer.getZ(),
-                playerName
+                playerName,
+                teamName
             );
             
             positions.put(playerUUID, pos);
@@ -1517,6 +1629,8 @@ public class CapturePointManager {
         if (event.getEntity() instanceof ServerPlayer) {
             ServerPlayer player = (ServerPlayer) event.getEntity();
             playerNameMap.put(player.getUUID(), player.getName().getString());
+            Team playerTeam = player.getTeam();
+            playerTeamNameMap.put(player.getUUID(), playerTeam != null ? playerTeam.getName() : "");
             
             // 向新登录的玩家同步配置
             com.example.hcrpoints.network.SyncConfigMessage.sendToPlayer(player);
@@ -1564,6 +1678,7 @@ public class CapturePointManager {
     public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
         Player player = event.getEntity();
         playerNameMap.remove(player.getUUID());
+        playerTeamNameMap.remove(player.getUUID());
     }
     
     /**
@@ -1574,6 +1689,18 @@ public class CapturePointManager {
     public void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
         Player player = event.getEntity();
         playerNameMap.put(player.getUUID(), player.getName().getString());
+        Team playerTeam = player.getTeam();
+        playerTeamNameMap.put(player.getUUID(), playerTeam != null ? playerTeam.getName() : "");
+    }
+
+    private void syncMapDataIfPlayerTeamChanged(ServerPlayer player, String currentTeamName) {
+        UUID playerUUID = player.getUUID();
+        String previousTeamName = playerTeamNameMap.put(playerUUID, currentTeamName);
+        if (previousTeamName != null && !previousTeamName.equals(currentTeamName)) {
+            ModLogger.info("玩家 " + player.getName().getString() + " 队伍从 " + previousTeamName + " 变更为 " + currentTeamName + "，重新同步战术地图据点视野");
+            syncToClient(player);
+            syncPlayerPositionsToPlayer(player);
+        }
     }
     
     /**
@@ -1742,16 +1869,7 @@ public class CapturePointManager {
         }
         
         try {
-            List<CapturePoint.SerializableCapturePoint> serializedPoints = new ArrayList<>();
-            for (CapturePoint point : capturePoints.values()) {
-                // 行动模式下只同步当前批次的据点
-                if (ModConfig.enableOperationMode.get() && point.getBatch() != currentBatch) {
-                    continue;
-                }
-                serializedPoints.add(point.toSerializable());
-            }
-            
-            SyncCapturePointsMessage.sendToPlayer(player, serializedPoints);
+            SyncCapturePointsMessage.sendToPlayer(player, getSerializablePointsForMap(player));
         } catch (Exception e) {
             ModLogger.error("同步据点数据到客户端时发生异常: " + e.getMessage());
         }

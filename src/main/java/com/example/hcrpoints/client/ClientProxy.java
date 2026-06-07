@@ -17,7 +17,6 @@ public class ClientProxy {
         // 注册按键绑定
         event.register(ClientEventHandler.OPEN_GUI_KEY);
         event.register(ClientEventHandler.TACTICAL_MAP_KEY);
-        event.register(ClientEventHandler.MAP_DISPLAY_MODE_KEY); // 注册地图显示模式切换按键
         event.register(ClientEventHandler.MAP_CONFIG_KEY); // 注册地图配置界面按键
         event.register(ClientEventHandler.OPEN_MD_READER_KEY); // 注册MD文件阅读器按键
     }

@@ -22,7 +22,7 @@ toggleSprint:false
 darkMojangStudiosBackground:false
 hideLightningFlashes:false
 mouseSensitivity:0.5
-fov:0.0
+fov:0.35
 screenEffectScale:1.0
 fovEffectScale:1.0
 darknessEffectScale:1.0
@@ -119,12 +119,11 @@ key_key.hotbar.7:key.keyboard.7
 key_key.hotbar.8:key.keyboard.8
 key_key.hotbar.9:key.keyboard.9
 key_key.hcrpoints.open_gui:key.keyboard.o
-key_key.hcrpoints.tactical_map:key.keyboard.m
-key_key.hcrpoints.map_display_mode:key.keyboard.semicolon
+key_key.hcrpoints.tactical_map:key.keyboard.v
 key_key.hcrpoints.map_config:key.keyboard.x
 key_key.hcrpoints.open_md_reader:key.keyboard.unknown
 soundCategory_master:1.0
-soundCategory_music:1.0
+soundCategory_music:0.0
 soundCategory_record:1.0
 soundCategory_weather:1.0
 soundCategory_block:1.0

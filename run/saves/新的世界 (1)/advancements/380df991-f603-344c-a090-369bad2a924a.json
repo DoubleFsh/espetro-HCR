@@ -43,6 +43,7 @@
   },
   "minecraft:adventure/kill_all_mobs": {
     "criteria": {
+      "minecraft:spider": "2026-06-07 02:21:14 +0800",
       "minecraft:slime": "2026-05-23 17:46:30 +0800"
     },
     "done": false

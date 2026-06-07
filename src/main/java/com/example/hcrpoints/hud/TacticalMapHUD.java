@@ -24,22 +24,33 @@ import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
- * 战术地图HUD类，通过M键打开，显示玩家周围50格的据点信息
+ * 战术地图HUD类，通过V键打开，显示玩家周围更大范围的据点信息
  */
 public class TacticalMapHUD implements IGuiOverlay {
-    private static final int TACTICAL_MAP_WIDTH = 400;
-    private static final int TACTICAL_MAP_HEIGHT = 300;
-    private static final int MINI_MAP_SCALE = 2; // 迷你地图缩放比例（原始尺寸的1/2）
-    private static final int TACTICAL_MAP_ZOOM = 50; // 地图覆盖范围：玩家周围50格
+    private static final int MIN_MAP_ZOOM = 50;
+    private static final int MAX_MAP_ZOOM = 1000;
+    private static final int MAP_ZOOM_STEP = 50;
+    private static final int[] ROUTE_COLORS = {
+            0xFFFF5555,
+            0xFF55FF55,
+            0xFF5599FF,
+            0xFFFFFF55,
+            0xFFFF55FF,
+            0xFF55FFFF,
+            0xFFFFAA55
+    };
     
-    private boolean isMapVisible = false; // 地图是否可见（按键唤出模式下）
-    private List<CapturePoint> allPoints;
+    private boolean isMapVisible = false; // 地图是否可见
+    private int mapZoom = MAX_MAP_ZOOM;
+    private List<CapturePoint> allPoints = new ArrayList<>();
     
     // 存储从服务端同步的玩家位置
     private final Map<UUID, com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition> syncedPlayerPositions = new HashMap<>();
@@ -55,8 +66,17 @@ public class TacticalMapHUD implements IGuiOverlay {
     public TacticalMapHUD() {
         // 注册事件监听器
         MinecraftForge.EVENT_BUS.register(this);
-        
-        this.allPoints = new ArrayList<>(CapturePointManager.getInstance().getAllCapturePoints());
+    }
+
+    public void syncVisibleCapturePointsFromServer(List<CapturePoint.SerializableCapturePoint> serializedPoints) {
+        List<CapturePoint> syncedPoints = new ArrayList<>();
+        for (CapturePoint.SerializableCapturePoint sp : serializedPoints) {
+            CapturePoint point = new CapturePoint(sp.name, sp.pos1, sp.pos2, sp.batch);
+            point.restoreFromSerializable(sp);
+            syncedPoints.add(point);
+        }
+        syncedPoints.sort(Comparator.comparingInt(CapturePoint::getBatch).thenComparing(CapturePoint::getName));
+        this.allPoints = syncedPoints;
     }
     
     /**
@@ -70,23 +90,14 @@ public class TacticalMapHUD implements IGuiOverlay {
      * 切换地图显示模式
      */
     public void cycleDisplayMode() {
-        // 从配置中获取当前显示模式
-        MapDisplayMode currentMode = TacticalMapConfig.displayMode.get();
-        // 循环切换显示模式
-        int currentIndex = currentMode.ordinal();
-        int nextIndex = (currentIndex + 1) % MapDisplayMode.values().length;
-        MapDisplayMode nextMode = MapDisplayMode.values()[nextIndex];
-        // 更新配置
-        TacticalMapConfig.displayMode.set(nextMode);
-        // 保存配置
-        TacticalMapConfig.SPEC.save();
+        // 地图现在只有一种显示形态，保留方法避免旧按键调用报错。
     }
     
     /**
      * 获取当前显示模式
      */
     public MapDisplayMode getDisplayMode() {
-        return TacticalMapConfig.displayMode.get();
+        return MapDisplayMode.TOGGLE_KEY;
     }
     
     /**
@@ -94,6 +105,14 @@ public class TacticalMapHUD implements IGuiOverlay {
      */
     public boolean isMapVisible() {
         return isMapVisible;
+    }
+
+    public void increaseRenderRange() {
+        mapZoom = Math.min(MAX_MAP_ZOOM, mapZoom + MAP_ZOOM_STEP);
+    }
+
+    public void decreaseRenderRange() {
+        mapZoom = Math.max(MIN_MAP_ZOOM, mapZoom - MAP_ZOOM_STEP);
     }
     
     /**
@@ -106,122 +125,15 @@ public class TacticalMapHUD implements IGuiOverlay {
      */
     @Override
     public void render(ForgeGui gui, GuiGraphics guiGraphics, float partialTick, int screenWidth, int screenHeight) {
-        // 获取据点管理器实例
-        CapturePointManager manager = CapturePointManager.getInstance();
-        allPoints = new ArrayList<>(manager.getAllCapturePoints());
-        
-        // 检查是否需要渲染地图
-        boolean shouldRender = false;
-        int mapWidth = TACTICAL_MAP_WIDTH;
-        int mapHeight = TACTICAL_MAP_HEIGHT;
-        int mapLeft = 0;
-        int mapTop = 0;
-        boolean isMiniMap = false;
-        
-        // 从配置中获取当前显示模式
-        MapDisplayMode currentDisplayMode = TacticalMapConfig.displayMode.get();
-        
-        // 根据显示模式确定渲染参数
-        switch (currentDisplayMode) {
-            case TOGGLE_KEY:
-                // 按键唤出模式
-                if (!isMapVisible) {
-                    return;
-                }
-                shouldRender = true;
-                // 居中显示
-                mapLeft = (screenWidth - mapWidth) / 2;
-                mapTop = (screenHeight - mapHeight) / 2;
-                break;
-                
-            case ALWAYS_VISIBLE_BOTTOM_LEFT:
-            case ALWAYS_VISIBLE_TOP_LEFT:
-            case ALWAYS_VISIBLE_BOTTOM_RIGHT:
-            case ALWAYS_VISIBLE_TOP_RIGHT:
-                // 常显模式，渲染迷你地图
-                shouldRender = true;
-                isMiniMap = true;
-                // 从配置中获取迷你地图缩放比例
-                int scalePercent = TacticalMapConfig.miniMapScale.get();
-                // 计算迷你地图尺寸，根据配置的百分比缩放
-                mapWidth = (TACTICAL_MAP_WIDTH * scalePercent) / 100;
-                mapHeight = (TACTICAL_MAP_HEIGHT * scalePercent) / 100;
-                
-                // 根据显示位置设置地图坐标
-                int margin = 10; // 边缘间距
-                switch (currentDisplayMode) {
-                    case ALWAYS_VISIBLE_TOP_LEFT:
-                        mapLeft = margin;
-                        mapTop = margin;
-                        break;
-                    case ALWAYS_VISIBLE_TOP_RIGHT:
-                        mapLeft = screenWidth - mapWidth - margin;
-                        mapTop = margin;
-                        break;
-                    case ALWAYS_VISIBLE_BOTTOM_LEFT:
-                        mapLeft = margin;
-                        mapTop = screenHeight - mapHeight - margin;
-                        break;
-                    case ALWAYS_VISIBLE_BOTTOM_RIGHT:
-                        mapLeft = screenWidth - mapWidth - margin;
-                        mapTop = screenHeight - mapHeight - margin;
-                        break;
-                    default:
-                        break;
-                }
-                
-                // 计算摄影机晃动偏移量
-                if (isMiniMap) {
-                    Minecraft mc = Minecraft.getInstance();
-                    LocalPlayer player = mc.player;
-                    if (player != null) {
-                        // 获取当前玩家的视角角度
-                        float yaw = player.getYRot();
-                        float pitch = player.getXRot();
-                        
-                        // 计算与上一帧的角度差（考虑角度环绕）
-                        float yawDelta = calculateAngleDelta(prevYaw, yaw);
-                        float pitchDelta = calculateAngleDelta(prevPitch, pitch);
-                        
-                        // 更新上一帧的角度
-                        prevYaw = yaw;
-                        prevPitch = pitch;
-                        
-                        // 计算原始晃动偏移（角度差转换为屏幕坐标），反转方向
-                        float rawShakeX = -yawDelta * SHAKE_INTENSITY;
-                        float rawShakeY = -pitchDelta * SHAKE_INTENSITY;
-                        
-                        // 应用平滑算法，实现平滑过渡
-                        smoothShakeX += (rawShakeX - smoothShakeX) * SMOOTH_FACTOR;
-                        smoothShakeY += (rawShakeY - smoothShakeY) * SMOOTH_FACTOR;
-                        
-                        // 获取玩家的垂直速度，叠加高度变化的y轴偏移
-                        double motionY = player.getDeltaMovement().y;
-                        int heightOffset = (int) (motionY * 10);
-                        
-                        // 计算总y轴偏移
-                        int totalYOffset = (int) smoothShakeY + heightOffset;
-                        // 确保y轴总偏移量不超过上限（±10像素）
-                        totalYOffset = Math.max(-15, Math.min(15, totalYOffset));
-                        
-                        // 确保x轴偏移量不超过上限（±15像素）
-                        int totalXOffset = (int) smoothShakeX;
-                        totalXOffset = Math.max(-25, Math.min(25, totalXOffset));
-                        
-                        // 应用平滑后的晃动偏移量
-                        mapLeft += totalXOffset;
-                        mapTop += totalYOffset;
-                    }
-                }
-                break;
-                
-            default:
-                break;
-        }
-        
-        if (!shouldRender) {
+        if (!isMapVisible) {
             return;
         }
+        
+        int mapWidth = (int)(screenWidth * 0.42);
+        int mapHeight = (int)(screenHeight * 0.75);
+        int mapLeft = screenWidth - mapWidth;
+        int mapTop = (screenHeight - mapHeight) / 2;
+        boolean isMiniMap = false;
         
         // 渲染地图背景（半透明）
         int bgColor = 0xCC202020;
@@ -238,22 +150,12 @@ public class TacticalMapHUD implements IGuiOverlay {
         if (!isMiniMap) {
             guiGraphics.drawString(
                 Minecraft.getInstance().font,
-                Component.literal("战术地图 (M键关闭)"),
+                Component.literal("战术地图 (V键关闭) 范围:" + mapZoom + " C+/B-"),
                 mapLeft + 5,
                 mapTop + 5,
                 0xFFFFFF,
                 false
             );
-        }
-        
-        // 渲染行动模式兵力显示（仅当行动模式运行时）
-        if (CapturePointManager.getInstance().isOperationModeRunning()) {
-            renderReinforcementsDisplay(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight, isMiniMap);
-        }
-        
-        // 渲染队伍玩家列表（仅当迷你地图启用且队伍机制启用时）
-        if (isMiniMap && com.example.hcrpoints.config.ModConfig.enableTeams.get()) {
-            renderTeamPlayers(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight, currentDisplayMode);
         }
         
         // 渲染鸟瞰图，包含玩家位置
@@ -384,8 +286,8 @@ public class TacticalMapHUD implements IGuiOverlay {
         double playerZ = localPlayer.getZ();
         
         // 计算缩放比例
-        double scaleX = (double)mapWidth / (TACTICAL_MAP_ZOOM * 2);
-        double scaleY = (double)mapHeight / (TACTICAL_MAP_ZOOM * 2);
+        double scaleX = (double)mapWidth / (mapZoom * 2);
+        double scaleY = (double)mapHeight / (mapZoom * 2);
         
         // 地图边界坐标
         int mapRight = mapLeft + mapWidth;
@@ -422,34 +324,11 @@ public class TacticalMapHUD implements IGuiOverlay {
             mapPosX = Math.max(gridLeft, Math.min(gridRight, mapPosX));
             mapPosY = Math.max(gridTop, Math.min(gridBottom, mapPosY));
             
-            // 确定玩家标记颜色：友方绿色，敌方红色
-            int markerColor = 0xFFFFFFFF; // 默认白色
-            
-            // 获取其他玩家的队伍
-            // 这里需要从服务端同步的队伍信息中获取，暂时使用客户端本地的玩家列表作为备选
-            Minecraft minecraft = Minecraft.getInstance();
-            if (minecraft.level != null) {
-                for (net.minecraft.world.entity.player.Player onlinePlayer : minecraft.level.players()) {
-                    if (onlinePlayer.getUUID().equals(playerUUID)) {
-                        Team otherTeam = onlinePlayer.getTeam();
-                        
-                        // 判断队伍关系
-                        if (localTeam != null && otherTeam != null) {
-                            // 如果本地玩家和其他玩家在同一队伍，显示绿色
-                            if (localTeam == otherTeam) {
-                                markerColor = 0xFF00FF00; // 绿色
-                            } else {
-                                // 不同队伍，显示红色
-                                markerColor = 0xFFFF0000; // 红色
-                            }
-                        }
-                        break;
-                    }
-                }
+            if (localTeam == null || !localTeam.getName().equals(pos.getTeamName())) {
+                continue;
             }
             
-            // 渲染玩家位置
-            guiGraphics.fill(mapPosX - 2, mapPosY - 2, mapPosX + 3, mapPosY + 3, markerColor);
+            guiGraphics.fill(mapPosX - 2, mapPosY - 2, mapPosX + 3, mapPosY + 3, 0xFF00FF00);
         }
         
         // 如果没有同步到玩家位置，尝试直接获取本地玩家列表作为备选方案
@@ -477,21 +356,12 @@ public class TacticalMapHUD implements IGuiOverlay {
                     mapPosX = Math.max(gridLeft, Math.min(gridRight, mapPosX));
                     mapPosY = Math.max(gridTop, Math.min(gridBottom, mapPosY));
                     
-                    // 确定玩家标记颜色：友方绿色，敌方红色
-                    int markerColor = 0xFFFFFFFF; // 默认白色
                     Team otherTeam = otherPlayer.getTeam();
-                    
-                    // 判断队伍关系
-                    if (localTeam != null && otherTeam != null) {
-                        if (localTeam == otherTeam) {
-                            markerColor = 0xFF00FF00; // 绿色
-                        } else {
-                            markerColor = 0xFFFF0000; // 红色
-                        }
+                    if (localTeam == null || otherTeam == null || localTeam != otherTeam) {
+                        continue;
                     }
                     
-                    // 渲染玩家位置
-                    guiGraphics.fill(mapPosX - 2, mapPosY - 2, mapPosX + 3, mapPosY + 3, markerColor);
+                    guiGraphics.fill(mapPosX - 2, mapPosY - 2, mapPosX + 3, mapPosY + 3, 0xFF00FF00);
                 }
             }
         }
@@ -514,10 +384,6 @@ public class TacticalMapHUD implements IGuiOverlay {
         
         // 渲染简单的网格背景
         int gridSize = 20;
-        // 根据地图尺寸调整网格大小，确保在迷你地图上也能清晰显示
-        if (mapWidth < TACTICAL_MAP_WIDTH) {
-            gridSize = gridSize / MINI_MAP_SCALE;
-        }
         for (int x = 0; x <= mapWidth; x += gridSize) {
             int gridColor = 0x22FFFFFF;
             guiGraphics.fill(mapLeft + x, gridStartY, mapLeft + x + 1, mapTop + mapHeight, gridColor);
@@ -566,14 +432,15 @@ public class TacticalMapHUD implements IGuiOverlay {
         double playerY = player.getY();
         
         // 计算缩放比例
-        double scaleX = (double)mapWidth / (TACTICAL_MAP_ZOOM * 2);
-        double scaleY = (double)mapHeight / (TACTICAL_MAP_ZOOM * 2);
+        double scaleX = (double)mapWidth / (mapZoom * 2);
+        double scaleY = (double)mapHeight / (mapZoom * 2);
         
         // 地图边界坐标
         int mapRight = mapLeft + mapWidth;
         int mapBottom = mapTop + mapHeight;
         
         // 遍历所有据点
+        Map<CapturePoint, int[]> pointPositions = new HashMap<>();
         for (CapturePoint point : allPoints) {
             // 计算据点中心坐标
             double pointCenterX = (point.getPos1().getX() + point.getPos2().getX()) / 2.0;
@@ -593,6 +460,7 @@ public class TacticalMapHUD implements IGuiOverlay {
             // 将超出网格范围的据点限制在网格边缘
             mapPosX = Math.max(gridLeft, Math.min(gridRight, mapPosX));
             mapPosY = Math.max(gridTop, Math.min(gridBottom, mapPosY));
+            pointPositions.put(point, new int[] {mapPosX, mapPosY});
             
             // 根据据点状态获取颜色
             int pointColor = getStatusColor(point);
@@ -622,9 +490,57 @@ public class TacticalMapHUD implements IGuiOverlay {
                 false
             );
             
+            // 渲染据点坐标
+            String coordText = (int)pointCenterX + ", " + (int)pointCenterZ;
+            guiGraphics.drawString(
+                Minecraft.getInstance().font,
+                coordText,
+                mapPosX + 5,
+                mapPosY + 18,
+                0x888888,
+                false
+            );
+            
             // 渲染据点边界，传入网格边界参数，确保据点范围限制在网格内
             renderPointBoundary(guiGraphics, point, playerX, playerZ, playerMapX, playerMapY, scaleX, scaleY, gridLeft, gridTop, gridRight, gridBottom);
         }
+
+        renderBatchRoutes(guiGraphics, pointPositions);
+    }
+
+    private void renderBatchRoutes(GuiGraphics guiGraphics, Map<CapturePoint, int[]> pointPositions) {
+        Map<Integer, List<CapturePoint>> pointsByBatch = new TreeMap<>();
+        for (CapturePoint point : allPoints) {
+            pointsByBatch.computeIfAbsent(point.getBatch(), key -> new ArrayList<>()).add(point);
+        }
+
+        CapturePoint previousBatchLastPoint = null;
+        for (List<CapturePoint> batchPoints : pointsByBatch.values()) {
+            batchPoints.sort(Comparator.comparing(CapturePoint::getName));
+
+            if (previousBatchLastPoint != null && !batchPoints.isEmpty()) {
+                drawRouteLine(guiGraphics, pointPositions, previousBatchLastPoint, batchPoints.get(0), ROUTE_COLORS[0]);
+            }
+
+            for (int i = 0; i < batchPoints.size() - 1; i++) {
+                int color = ROUTE_COLORS[i % ROUTE_COLORS.length];
+                drawRouteLine(guiGraphics, pointPositions, batchPoints.get(i), batchPoints.get(i + 1), color);
+            }
+
+            if (!batchPoints.isEmpty()) {
+                previousBatchLastPoint = batchPoints.get(batchPoints.size() - 1);
+            }
+        }
+    }
+
+    private void drawRouteLine(GuiGraphics guiGraphics, Map<CapturePoint, int[]> pointPositions,
+                               CapturePoint from, CapturePoint to, int color) {
+        int[] fromPos = pointPositions.get(from);
+        int[] toPos = pointPositions.get(to);
+        if (fromPos == null || toPos == null) {
+            return;
+        }
+        drawLine(guiGraphics, fromPos[0], fromPos[1], toPos[0], toPos[1], color);
     }
     
     /**

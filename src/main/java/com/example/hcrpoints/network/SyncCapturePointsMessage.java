@@ -2,6 +2,7 @@ package com.example.hcrpoints.network;
 
 import com.example.hcrpoints.capturepoint.CapturePoint;
 import com.example.hcrpoints.capturepoint.CapturePointManager;
+import com.example.hcrpoints.hud.TacticalMapHUD;
 import com.example.hcrpoints.util.ModLogger;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
@@ -62,6 +63,7 @@ public class SyncCapturePointsMessage {
             try {
                 // 完全替换客户端据点数据，确保删除操作能正确同步
                 CapturePointManager.getInstance().syncFromServer(msg.capturePoints);
+                TacticalMapHUD.getInstance().syncVisibleCapturePointsFromServer(msg.capturePoints);
             } catch (Exception e) {
                 ModLogger.syncError("Failed to handle sync message: " + e.getMessage());
                 e.printStackTrace();

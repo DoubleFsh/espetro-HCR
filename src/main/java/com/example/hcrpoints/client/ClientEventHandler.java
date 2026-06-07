@@ -21,7 +21,6 @@ public class ClientEventHandler {
     private static final String KEY_CATEGORY = "key.category.hcrpoints";
     private static final String KEY_OPEN_GUI = "key.hcrpoints.open_gui";
     private static final String KEY_TACTICAL_MAP = "key.hcrpoints.tactical_map";
-    private static final String KEY_MAP_DISPLAY_MODE = "key.hcrpoints.map_display_mode";
     private static final String KEY_MAP_CONFIG = "key.hcrpoints.map_config";
     private static final String KEY_OPEN_MD_READER = "key.hcrpoints.open_md_reader";
     
@@ -33,13 +32,6 @@ public class ClientEventHandler {
     
     public static final KeyMapping TACTICAL_MAP_KEY = new KeyMapping(
         KEY_TACTICAL_MAP,
-        GLFW.GLFW_KEY_M,
-        KEY_CATEGORY
-    );
-    
-    // 添加新的按键绑定：V键 切换地图显示模式
-    public static final KeyMapping MAP_DISPLAY_MODE_KEY = new KeyMapping(
-        KEY_MAP_DISPLAY_MODE,
         GLFW.GLFW_KEY_V,
         KEY_CATEGORY
     );
@@ -60,7 +52,8 @@ public class ClientEventHandler {
     
     private static boolean wasGuiKeyPressed = false;
     private static boolean wasTacticalMapKeyPressed = false;
-    private static boolean wasMapDisplayModeKeyPressed = false;
+    private static boolean wasMapRangeIncreasePressed = false;
+    private static boolean wasMapRangeDecreasePressed = false;
     private static boolean wasMapConfigKeyPressed = false;
     private static boolean wasMdReaderKeyPressed = false;
     
@@ -92,13 +85,25 @@ public class ClientEventHandler {
                 TacticalMapHUD.getInstance().toggleMapVisibility();
             }
             wasTacticalMapKeyPressed = isTacticalMapPressed;
-            
-            // 处理地图显示模式切换按键（alt+d）
-            boolean isMapDisplayModePressed = MAP_DISPLAY_MODE_KEY.isDown();
-            if (isMapDisplayModePressed && !wasMapDisplayModeKeyPressed && mc.player != null) {
-                TacticalMapHUD.getInstance().cycleDisplayMode();
+
+            if (mc.player != null && mc.screen == null && TacticalMapHUD.getInstance().isMapVisible()) {
+                long window = mc.getWindow().getWindow();
+                
+                boolean isMapRangeIncreasePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
+                if (isMapRangeIncreasePressed && !wasMapRangeIncreasePressed) {
+                    TacticalMapHUD.getInstance().increaseRenderRange();
+                }
+                wasMapRangeIncreasePressed = isMapRangeIncreasePressed;
+                
+                boolean isMapRangeDecreasePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_B) == GLFW.GLFW_PRESS;
+                if (isMapRangeDecreasePressed && !wasMapRangeDecreasePressed) {
+                    TacticalMapHUD.getInstance().decreaseRenderRange();
+                }
+                wasMapRangeDecreasePressed = isMapRangeDecreasePressed;
+            } else {
+                wasMapRangeIncreasePressed = false;
+                wasMapRangeDecreasePressed = false;
             }
-            wasMapDisplayModeKeyPressed = isMapDisplayModePressed;
             
             // 处理地图配置界面按键（X键）
             boolean isMapConfigPressed = MAP_CONFIG_KEY.isDown();

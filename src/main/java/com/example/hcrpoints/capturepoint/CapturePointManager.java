@@ -5,7 +5,6 @@ import com.example.hcrpoints.config.ModConfig;
 import com.example.hcrpoints.network.SyncCapturePointsMessage;
 import com.example.hcrpoints.util.ModLogger;
 import com.example.hcrpoints.capturepoint.CaptureState;
-import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -18,6 +17,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.LogicalSide;
+import org.espetro.team.TroopCountManager;
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -937,8 +937,8 @@ public class CapturePointManager {
         // 如果所有据点都被进攻方占领，处理批次推进或结束
         if (allCapturedByAttacker) {
             // 每完成一个批次，给进攻方增加200兵力
-            int cmdResult = server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), "/espetro troops add ATTACK 200");
-            ModLogger.info("批次 " + currentBatch + " 完成，执行命令：espetro troops add ATTACK 200，返回值：" + cmdResult);
+            TroopCountManager.getInstance().modifyAttackTroops(200);
+            ModLogger.info("批次 " + currentBatch + " 完成，已通过 Espetro 最新兵力接口为进攻方增加 200 兵力");
             
             // 向所有进攻方玩家发送批次完成消息
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {

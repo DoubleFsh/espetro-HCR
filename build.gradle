@@ -118,12 +118,22 @@ repositories {
         name = "Forge Maven"
         url = "https://maven.minecraftforge.net/"
     }
+    maven {
+        name = "CurseMaven"
+        url = "https://cursemaven.com"
+        content {
+            includeGroup "curse.maven"
+        }
+    }
 
     // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
     // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
     // flatDir {
     //     dir 'libs'
     // }
+    flatDir {
+        dirs '../Espetro/build/libs'
+    }
 }
 
 dependencies {
@@ -133,6 +143,9 @@ dependencies {
     // If the group id is "net.minecraft" and the artifact id is one of ["client", "server", "joined"],
     // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    implementation fg.deobf("curse.maven:mutil-351914:7772906")
+    compileOnly fg.deobf("org.espetro:espetro:${espetro_version}")
+    runtimeOnly fg.deobf("org.espetro:espetro:${espetro_version}")
 
     // Example mod dependency with JEI - using fg.deobf() ensures the dependency is remapped to your development mappings
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
@@ -160,7 +173,7 @@ tasks.named('processResources', ProcessResources).configure {
             forge_version: forge_version, forge_version_range: forge_version_range,
             loader_version_range: loader_version_range,
             mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
-            mod_authors: mod_authors, mod_description: mod_description,
+            mod_authors: mod_authors, mod_description: mod_description, espetro_version: espetro_version,
     ]
     inputs.properties replaceProperties
 

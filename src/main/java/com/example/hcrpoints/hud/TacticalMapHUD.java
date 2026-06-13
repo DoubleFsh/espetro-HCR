@@ -133,8 +133,20 @@ public class TacticalMapHUD implements IGuiOverlay {
         int mapHeight = (int)(screenHeight * 0.75);
         int mapLeft = screenWidth - mapWidth;
         int mapTop = (screenHeight - mapHeight) / 2;
-        boolean isMiniMap = false;
-        
+        renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
+            "战术地图 (V键关闭) 范围:" + mapZoom + " C+/B-");
+    }
+
+    public void renderEmbeddedMap(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth, int mapHeight, float partialTick) {
+        renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
+            "战术地图 范围:" + mapZoom + " C+/B-");
+    }
+
+    private void renderMapArea(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth, int mapHeight, String title) {
+        if (mapWidth <= 0 || mapHeight <= 0) {
+            return;
+        }
+
         // 渲染地图背景（半透明）
         int bgColor = 0xCC202020;
         guiGraphics.fill(mapLeft, mapTop, mapLeft + mapWidth, mapTop + mapHeight, bgColor);
@@ -146,17 +158,14 @@ public class TacticalMapHUD implements IGuiOverlay {
         guiGraphics.fill(mapLeft + mapWidth - 1, mapTop, mapLeft + mapWidth, mapTop + mapHeight, borderColor);
         guiGraphics.fill(mapLeft, mapTop + mapHeight - 1, mapLeft + mapWidth, mapTop + mapHeight, borderColor);
         
-        // 渲染地图标题（仅在完整尺寸时显示）
-        if (!isMiniMap) {
-            guiGraphics.drawString(
-                Minecraft.getInstance().font,
-                Component.literal("战术地图 (V键关闭) 范围:" + mapZoom + " C+/B-"),
-                mapLeft + 5,
-                mapTop + 5,
-                0xFFFFFF,
-                false
-            );
-        }
+        guiGraphics.drawString(
+            Minecraft.getInstance().font,
+            Component.literal(title),
+            mapLeft + 5,
+            mapTop + 5,
+            0xFFFFFF,
+            false
+        );
         
         // 渲染鸟瞰图，包含玩家位置
         renderBirdsEyeView(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight);

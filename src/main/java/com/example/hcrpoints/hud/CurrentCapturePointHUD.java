@@ -3,6 +3,7 @@ package com.example.hcrpoints.hud;
 import com.example.hcrpoints.capturepoint.CapturePoint;
 import com.example.hcrpoints.capturepoint.CapturePointManager;
 import com.example.hcrpoints.capturepoint.DisplayState;
+import com.example.hcrpoints.util.EspetroTeamBridge;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraftforge.client.gui.overlay.ForgeGui;
@@ -161,20 +162,7 @@ public class CurrentCapturePointHUD implements IGuiOverlay {
             return false;
         }
         
-        // 检查当前玩家的队伍
-        net.minecraft.world.scores.Team playerTeam = mc.player.getTeam();
-        
-        // 如果占领者是玩家名称
-        if (captorName.equals(mc.player.getName().getString())) {
-            return true;
-        }
-        
-        // 如果占领者是队伍名称，且当前玩家在该队伍中
-        if (playerTeam != null && captorName.equals(playerTeam.getName())) {
-            return true;
-        }
-        
-        return false;
+        return EspetroTeamBridge.isSameTeam(EspetroTeamBridge.getPlayerTeam(mc.player), captorName);
     }
 
     /**

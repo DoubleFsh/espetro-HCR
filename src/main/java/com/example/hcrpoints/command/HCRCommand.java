@@ -1,8 +1,6 @@
 package com.example.hcrpoints.command;
 
-import com.example.hcrpoints.capturepoint.CapturePoint;
 import com.example.hcrpoints.capturepoint.CapturePointManager;
-import com.example.hcrpoints.config.ModConfig;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -49,27 +47,6 @@ public class HCRCommand {
                     .then(Commands.argument("soundName", StringArgumentType.word())
                         .suggests(HCRCommand::suggestSoundNames)
                         .executes(HCRCommand::executePlaySound)))
-                // 原命令，行动攻防机制启用时提示使用teamfight子命令
-                .then(Commands.literal("create")
-                    .then(Commands.argument("name", StringArgumentType.word())
-                        .then(Commands.argument("pos1", BlockPosArgument.blockPos())
-                            .then(Commands.argument("pos2", BlockPosArgument.blockPos())
-                                .executes(HCRCommand::executeCreate)))))
-                .then(Commands.literal("clear")
-                    .executes(HCRCommand::executeClear))
-                .then(Commands.literal("list")
-                    .executes(HCRCommand::executeList))
-                .then(Commands.literal("del")
-                    .then(Commands.argument("name", StringArgumentType.word())
-                        .executes(HCRCommand::executeDel)))
-                // 新增save命令，用于保存普通据点预设
-                .then(Commands.literal("save")
-                    .then(Commands.argument("presetId", IntegerArgumentType.integer(1))
-                        .executes(HCRCommand::executeSave)))
-                // 新增load命令，用于加载普通据点预设
-                .then(Commands.literal("load")
-                    .then(Commands.argument("presetId", IntegerArgumentType.integer(1))
-                        .executes(HCRCommand::executeLoad)))
                 // 新增mapctrl命令，控制地图是否显示玩家位置
                 .then(Commands.literal("mapctrl")
                     .then(Commands.argument("state", StringArgumentType.word())
@@ -80,7 +57,7 @@ public class HCRCommand {
                     .executes(HCRCommand::executeReload))
                 // 新增teamfight子命令，用于行动攻防模式
                 .then(Commands.literal("teamfight")
-                    .requires(source -> ModConfig.enableOperationMode.get() || hasPermission(source, 4))
+                    .requires(source -> hasPermission(source, 2))
                     .then(Commands.literal("create")
                         .then(Commands.argument("batch", IntegerArgumentType.integer(1))
                             .then(Commands.argument("name", StringArgumentType.word())
@@ -97,13 +74,6 @@ public class HCRCommand {
                             .executes(HCRCommand::executeTeamfightDel)))
                     .then(Commands.literal("clear")
                         .executes(HCRCommand::executeTeamfightClear))
-                    .then(Commands.literal("teamconfig")
-                        .then(Commands.argument("team", StringArgumentType.word())
-                            .suggests(HCRCommand::suggestExistingTeams)
-                            .then(Commands.argument("role", StringArgumentType.word())
-                                .suggests(HCRCommand::suggestTeamRoles)
-                                .then(Commands.argument("reinforcements", IntegerArgumentType.integer(1))
-                                    .executes(HCRCommand::executeTeamfightTeamConfig)))))
                     .then(Commands.literal("start")
                         .then(Commands.argument("totalBatches", IntegerArgumentType.integer(1))
                             .then(Commands.argument("endBehavior", StringArgumentType.word())
@@ -139,14 +109,17 @@ public class HCRCommand {
         }
         
         source.sendSuccess(() -> Component.literal("HCR据点争夺模组命令帮助"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi create <名称> <x1> <y1> <z1> <x2> <y2> <z2> - 创建据点（名称为单个大写字母，最多7个）"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi del <名称> - 删除指定名称的据点"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi clear - 清空所有据点（同步更新全客户端HUD）"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi list - 列出所有据点信息（名称/状态/进度）"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi save <序号> - 保存当前据点设置为预设"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi load <序号> - 加载指定序号的据点预设"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight create <批次> <名称> <x1> <y1> <z1> <x2> <y2> <z2> - 添加行动计划据点"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight list - 列出行动计划据点"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight del <名称> - 删除行动计划据点"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight clear - 清空行动计划据点"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight start <总批次> <terminate|loop> - 启动行动，队伍固定使用 Espetro 进攻方/防守方"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight stop - 停止行动"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight nextbatch - 推进到下一批次"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight save/load <序号> - 保存或加载行动预设"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi send <玩家> <边框颜色> <内容> - 向指定玩家发送消息弹窗"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi playsound <音效名> - 直接播放指定音效，例如：/hcrpi playsound lastStandBGM"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi mapctrl <true|false> - 控制战术地图玩家位置显示"), false);
         
         return 1;
     }
@@ -192,271 +165,6 @@ public class HCRCommand {
         builder.suggest("lastStandBGM", Component.literal("背水一战背景音乐"));
         
         return builder.buildFuture();
-    }
-    
-    /**
-     * 检查行动攻防机制是否启用，若启用则提示使用teamfight子命令
-     * @param source 命令源
-     * @return 如果需要阻止命令执行返回true，否则返回false
-     */
-    private static boolean checkOperationMode(CommandSourceStack source) {
-        if (ModConfig.enableOperationMode.get()) {
-            source.sendFailure(Component.literal("行动攻防机制已启用，需使用/hcrpi teamfight指令"));
-            return true;
-        }
-        return false;
-    }
-    
-    /**
-     * 执行创建据点命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeCreate(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查行动攻防机制是否启用
-        if (checkOperationMode(source)) {
-            return 0;
-        }
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取参数
-        String name = StringArgumentType.getString(context, "name");
-        BlockPos pos1 = BlockPosArgument.getBlockPos(context, "pos1");
-        BlockPos pos2 = BlockPosArgument.getBlockPos(context, "pos2");
-        
-        // 获取据点管理器
-        CapturePointManager manager = CapturePointManager.getInstance();
-        
-        // 验证据点名称
-        if (!manager.isValidPointName(name)) {
-            source.sendFailure(Component.literal("创建失败，据点名称必须为单个大写字母（A-Z）"));
-            return 0;
-        }
-        
-        // 验证坐标
-        if (!manager.isValidCoordinates(pos1, pos2)) {
-            source.sendFailure(Component.literal("创建失败，两点需构成有效长方体区域"));
-            return 0;
-        }
-        
-        // 检查据点数量
-        if (manager.getCapturePointCount() >= 7) {
-            source.sendFailure(Component.literal("创建失败，已达最大据点数量（7个）"));
-            return 0;
-        }
-        
-        // 检查据点名称是否已存在
-        if (manager.getCapturePoint(name) != null) {
-            source.sendFailure(Component.literal("创建失败，据点名称【" + name + "】已存在"));
-            return 0;
-        }
-        
-        // 创建据点
-        CapturePoint point = manager.createCapturePoint(name, pos1, pos2);
-        if (point == null) {
-            source.sendFailure(Component.literal("创建失败，未知错误"));
-            return 0;
-        }
-        
-        // 发送成功消息
-        source.sendSuccess(() -> Component.literal("据点【" + name + "】创建成功，区域：(" + 
-            pos1.getX() + "," + pos1.getY() + "," + pos1.getZ() + ")-(" + 
-            pos2.getX() + "," + pos2.getY() + "," + pos2.getZ() + ")"), true);
-        
-        return 1;
-    }
-    
-    /**
-     * 执行清空据点命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeClear(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查行动攻防机制是否启用
-        if (checkOperationMode(source)) {
-            return 0;
-        }
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取据点管理器并清空所有据点
-        CapturePointManager manager = CapturePointManager.getInstance();
-        manager.clearAllCapturePoints();
-        
-        // 发送成功消息
-        source.sendSuccess(() -> Component.literal("所有据点已清空，客户端HUD已同步更新"), true);
-        
-        return 1;
-    }
-    
-    /**
-     * 执行删除指定据点命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeDel(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查行动攻防机制是否启用
-        if (checkOperationMode(source)) {
-            return 0;
-        }
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取参数
-        String name = StringArgumentType.getString(context, "name");
-        
-        // 获取据点管理器
-        CapturePointManager manager = CapturePointManager.getInstance();
-        
-        // 检查据点是否存在
-        if (manager.getCapturePoint(name) == null) {
-            source.sendFailure(Component.literal("删除失败，未找到名称为【" + name + "】的据点"));
-            return 0;
-        }
-        
-        // 删除据点
-        boolean success = manager.removeCapturePoint(name);
-        if (success) {
-            // 发送成功消息
-            source.sendSuccess(() -> Component.literal("据点【" + name + "】已成功删除，客户端HUD已同步更新"), true);
-            return 1;
-        } else {
-            // 发送失败消息
-            source.sendFailure(Component.literal("删除据点【" + name + "】失败，未知错误"));
-            return 0;
-        }
-    }
-    
-    /**
-     * 执行列出据点命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeList(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查行动攻防机制是否启用
-        if (checkOperationMode(source)) {
-            return 0;
-        }
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取据点管理器
-        CapturePointManager manager = CapturePointManager.getInstance();
-        
-        // 检查是否有据点
-        if (manager.getCapturePointCount() == 0) {
-            source.sendSuccess(() -> Component.literal("当前无已创建据点"), false);
-            return 1;
-        }
-        
-        // 发送据点列表
-        source.sendSuccess(() -> Component.literal("当前据点列表（共" + manager.getCapturePointCount() + "个）"), false);
-        
-        int index = 1;
-        for (CapturePoint point : manager.getAllCapturePoints()) {
-            final int currentIndex = index;
-            source.sendSuccess(() -> Component.literal(currentIndex + ". " + point.getInfoString()), false);
-            index++;
-        }
-        
-        return 1;
-    }
-    
-    /**
-     * 执行保存普通据点预设命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeSave(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查行动攻防机制是否启用
-        if (checkOperationMode(source)) {
-            return 0;
-        }
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取预设ID
-        int presetId = IntegerArgumentType.getInteger(context, "presetId");
-        
-        // 保存预设
-        boolean success = CapturePointPresetManager.savePreset(presetId);
-        
-        if (success) {
-            // 发送成功消息
-            source.sendSuccess(() -> Component.literal("普通据点预设 " + presetId + " 已成功保存！"), true);
-        } else {
-            // 发送失败消息
-            source.sendFailure(Component.literal("保存预设失败！请查看服务器日志获取详细信息"));
-        }
-        
-        return 1;
-    }
-    
-    /**
-     * 执行加载普通据点预设命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeLoad(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查行动攻防机制是否启用
-        if (checkOperationMode(source)) {
-            return 0;
-        }
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取预设ID
-        int presetId = IntegerArgumentType.getInteger(context, "presetId");
-        
-        // 加载预设
-        boolean success = CapturePointPresetManager.loadPreset(presetId);
-        
-        if (success) {
-            // 发送成功消息
-            source.sendSuccess(() -> Component.literal("普通据点预设 " + presetId + " 已成功加载！"), true);
-        } else {
-            // 发送失败消息
-            source.sendFailure(Component.literal("加载预设失败！预设文件可能不存在或格式错误"));
-        }
-        
-        return 1;
     }
     
     /**
@@ -622,40 +330,6 @@ public class HCRCommand {
     }
     
     /**
-     * 执行设置队伍角色命令
-     * @param context 命令上下文
-     * @return 命令执行结果
-     */
-    private static int executeTeamfightTeamConfig(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        
-        // 检查权限
-        if (!hasPermission(source, 2)) {
-            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
-            return 0;
-        }
-        
-        // 获取参数
-        String team = StringArgumentType.getString(context, "team");
-        String role = StringArgumentType.getString(context, "role");
-        int reinforcements = IntegerArgumentType.getInteger(context, "reinforcements");
-        
-        // 调用CapturePointManager设置队伍角色和兵力
-        CapturePointManager manager = CapturePointManager.getInstance();
-        boolean success = manager.setTeamRole(team, role, reinforcements);
-        
-        if (success) {
-            // 发送成功消息
-            source.sendSuccess(() -> Component.literal("队伍【" + team + "】已设置为" + role + "角色，兵力：" + reinforcements), true);
-            return 1;
-        } else {
-            // 发送失败消息
-            source.sendFailure(Component.literal("设置失败，已有队伍被设置为" + role + "角色或角色类型无效"));
-            return 0;
-        }
-    }
-    
-    /**
      * 执行启动行动命令
      * @param context 命令上下文
      * @return 命令执行结果
@@ -669,12 +343,8 @@ public class HCRCommand {
             return 0;
         }
         
-        // 检查是否已经设置了攻守两方队伍
         CapturePointManager manager = CapturePointManager.getInstance();
-        if (!manager.hasBothRolesSet()) {
-            source.sendFailure(Component.literal("启动失败，请先设置进攻方和防守方队伍"));
-            return 0;
-        }
+        manager.bindEspetroTeams();
         
         // 获取命令参数
         int totalBatches = IntegerArgumentType.getInteger(context, "totalBatches");
@@ -693,44 +363,6 @@ public class HCRCommand {
         source.sendSuccess(() -> Component.literal("行动已启动！当前批次：1, 总批数：" + totalBatches + ", 结束行为：" + endBehavior), true);
         
         return 1;
-    }
-    
-    /**
-     * 为teamconfig命令的team参数添加自动补全
-     * @param context 命令上下文
-     * @param builder 补全建议构建器
-     * @return 补全建议的CompletableFuture
-     */
-    private static CompletableFuture<Suggestions> suggestExistingTeams(CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
-        // 获取服务器实例
-        net.minecraft.server.MinecraftServer server = context.getSource().getServer();
-        if (server == null) {
-            return builder.buildFuture();
-        }
-        
-        // 获取服务器的Scoreboard
-        net.minecraft.world.scores.Scoreboard scoreboard = server.getScoreboard();
-        
-        // 为每个存在的队伍添加补全建议
-        for (net.minecraft.world.scores.Team team : scoreboard.getPlayerTeams()) {
-            builder.suggest(team.getName());
-        }
-        
-        return builder.buildFuture();
-    }
-    
-    /**
-     * 为teamconfig命令的role参数添加自动补全
-     * @param context 命令上下文
-     * @param builder 补全建议构建器
-     * @return 补全建议的CompletableFuture
-     */
-    private static CompletableFuture<Suggestions> suggestTeamRoles(CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
-        // 只提供attacker和defender作为角色选项
-        builder.suggest("attacker");
-        builder.suggest("defender");
-        
-        return builder.buildFuture();
     }
     
     /**
@@ -1040,7 +672,9 @@ public class HCRCommand {
         com.example.hcrpoints.network.SyncMapPlayerDisplayMessage.broadcastToAll();
         
         // 发送成功消息
-        source.sendSuccess(() -> Component.literal("已重新加载配置文件，当前地图玩家位置显示：" + com.example.hcrpoints.config.MapPlayerDisplayConfig.getInstance().isShowPlayerLocations()), true);
+        source.sendSuccess(() -> Component.literal("已重新加载配置文件，当前地图玩家位置显示："
+            + com.example.hcrpoints.config.MapPlayerDisplayConfig.getInstance().isShowPlayerLocations()
+            + "；战术地图JSON请使用 /reload 热加载数据包"), true);
         
         return 1;
     }

@@ -73,5 +73,29 @@ public class NetworkHandler {
             .decoder(SyncMapPlayerDisplayMessage::decode)
             .consumerMainThread(SyncMapPlayerDisplayMessage::handle)
             .add();
+
+        INSTANCE.messageBuilder(SyncTacticalMapConfigMessage.class, nextPacketId())
+            .encoder(SyncTacticalMapConfigMessage::encode)
+            .decoder(SyncTacticalMapConfigMessage::decode)
+            .consumerMainThread(SyncTacticalMapConfigMessage::handle)
+            .add();
+
+        INSTANCE.messageBuilder(SyncBastionsMessage.class, nextPacketId())
+            .encoder(SyncBastionsMessage::encode)
+            .decoder(SyncBastionsMessage::decode)
+            .consumerMainThread(SyncBastionsMessage::handle)
+            .add();
+
+        INSTANCE.messageBuilder(SyncCapturePointOverviewMessage.class, nextPacketId())
+            .encoder(SyncCapturePointOverviewMessage::encode)
+            .decoder(SyncCapturePointOverviewMessage::decode)
+            .consumerMainThread(SyncCapturePointOverviewMessage::handle)
+            .add();
+
+        INSTANCE.messageBuilder(RequestCapturePointOverviewMessage.class, nextPacketId())
+            .encoder(RequestCapturePointOverviewMessage::encode)
+            .decoder(RequestCapturePointOverviewMessage::decode)
+            .consumerMainThread(RequestCapturePointOverviewMessage::handle)
+            .add();
     }
 }

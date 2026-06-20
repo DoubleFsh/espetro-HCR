@@ -2,7 +2,9 @@ package com.example.hcrpoints.capturepoint;
 
 import com.example.hcrpoints.HCRPointsMod;
 import com.example.hcrpoints.config.ModConfig;
+import com.example.hcrpoints.network.SyncBastionsMessage;
 import com.example.hcrpoints.network.SyncCapturePointsMessage;
+import com.example.hcrpoints.util.EspetroTeamBridge;
 import com.example.hcrpoints.util.ModLogger;
 import com.example.hcrpoints.capturepoint.CaptureState;
 import net.minecraft.core.BlockPos;
@@ -12,12 +14,11 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.scores.Team;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.LogicalSide;
-import org.espetro.team.TroopCountManager;
+import net.minecraftforge.fml.ModList;
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -62,10 +63,18 @@ public class CapturePointManager {
     private final Map<String, Integer> teamReinforcements = new ConcurrentHashMap<>(); // 队伍当前兵力映射：team -> reinforcements
     private final Map<String, Integer> teamInitialReinforcements = new ConcurrentHashMap<>(); // 队伍初始兵力映射：team -> initial_reinforcements
     private final Map<CapturePoint, Long> progressRecoveryTimers = new ConcurrentHashMap<>(); // 进度恢复计时器
+    private final Map<String, CapturePoint.SerializableCapturePoint> operationPointSnapshots = new ConcurrentHashMap<>(); // 行动模式非当前批次据点的最终显示状态
     
     // 玩家位置同步计时器
     private int playerPositionSyncTimer = 0;
     private static final int PLAYER_POSITION_SYNC_INTERVAL = 20; // 每20tick同步一次（1秒）    
+    private static final int BATCH_COMPLETION_ATTACK_REINFORCEMENT = 200;
+    private static final String ESPETRO_MOD_ID = "espetro";
+    private static final String ESPETRO_TROOP_COUNT_MANAGER_CLASS = "org.espetro.team.TroopCountManager";
+    private static final String ESPETRO_BASTION_MANAGER_CLASS = "org.espetro.bastion.BastionManager";
+    private static final String ESPETRO_GAME_STATE_MANAGER_CLASS = "org.espetro.team.GameStateManager";
+    private static final String ESPETRO_SPAWN_POINT_CONFIG_CLASS = "org.espetro.team.SpawnPointConfig";
+    private boolean espetroDeployingCapturePointsActivated = false;
 
     
     /**
@@ -126,6 +135,7 @@ public class CapturePointManager {
         this.playerNameMap = new ConcurrentHashMap<>();
         this.playerTeamNameMap = new ConcurrentHashMap<>();
         this.plannedPointsMap = new ConcurrentHashMap<>();
+        bindEspetroTeams();
     }
     
     /**
@@ -195,6 +205,7 @@ public class CapturePointManager {
                 ModLogger.warn("未找到计划据点【" + name + "】，移除失败");
                 return false;
             }
+            operationPointSnapshots.remove(name);
             
             ModLogger.info("计划据点【" + name + "】移除成功");
             return true;
@@ -209,6 +220,7 @@ public class CapturePointManager {
      */
     public void clearPlannedCapturePoints() {
         plannedPointsMap.clear();
+        operationPointSnapshots.clear();
         ModLogger.info("所有计划据点已清空");
     }
     
@@ -245,38 +257,8 @@ public class CapturePointManager {
      * @return 创建的据点实例，如果创建失败则返回null
      */
     public CapturePoint createCapturePoint(String name, BlockPos pos1, BlockPos pos2, int batch) {
-        try {
-            // 检查据点数量是否超过限制
-            if (capturePoints.size() >= 7) {
-                ModLogger.warn("创建据点失败：已达最大据点数量（7个）");
-                return null;
-            }
-            
-            // 检查据点名称是否已存在
-            if (capturePoints.containsKey(name)) {
-                ModLogger.warn("创建据点失败：据点名称 " + name + " 已存在");
-                return null;
-            }
-            
-            // 检查坐标是否有效（构成有效的长方体区域）
-            if (pos1.equals(pos2)) {
-                ModLogger.warn("创建据点失败：两点需构成有效长方体区域");
-                return null;
-            }
-            
-            // 创建据点实例并添加到Map中
-            CapturePoint point = new CapturePoint(name, pos1, pos2, batch);
-            capturePoints.put(name, point);
-            
-            ModLogger.info("据点 " + name + " (批次 " + batch + ") 创建成功，区域：(" + pos1.getX() + ", " + pos1.getY() + ", " + pos1.getZ() + ") - (" + pos2.getX() + ", " + pos2.getY() + ", " + pos2.getZ() + ")");
-            
-            // 同步到所有客户端
-            syncToAllClients();
-            return point;
-        } catch (Exception e) {
-            ModLogger.error("创建据点时发生异常: " + e.getMessage());
-            return null;
-        }
+        ModLogger.warn("普通据点模式已移除，请使用 addPlannedCapturePoint 创建行动模式计划据点");
+        return null;
     }
     
     /**
@@ -344,7 +326,7 @@ public class CapturePointManager {
         BlockPos playerPos = player.blockPosition();
         for (CapturePoint point : capturePoints.values()) {
             // 行动模式下只检查当前批次的据点
-            if (ModConfig.enableOperationMode.get() && point.getBatch() != currentBatch) {
+            if (operationModeRunning && point.getBatch() != currentBatch) {
                 continue;
             }
             if (point.isPositionInside(playerPos)) {
@@ -373,7 +355,7 @@ public class CapturePointManager {
      */
     public boolean setTeamRole(String team, String role, int reinforcements) {
         String normalizedRole = role.toLowerCase();
-        
+
         // 检查角色类型是否有效
         if (!normalizedRole.equals("attacker") && !normalizedRole.equals("defender")) {
             ModLogger.warn("无效的角色类型：" + role + "，只能是 attacker 或 defender");
@@ -385,39 +367,31 @@ public class CapturePointManager {
             ModLogger.warn("无效的兵力值：" + reinforcements + "，兵力必须大于0");
             return false;
         }
-        
-        // 检查队伍是否存在于服务器中
-        MinecraftServer server = HCRPointsMod.getServer();
-        if (server != null) {
-            // 获取服务器的Scoreboard
-            net.minecraft.world.scores.Scoreboard scoreboard = server.getScoreboard();
-            // 检查队伍是否存在
-            net.minecraft.world.scores.Team existingTeam = scoreboard.getPlayerTeam(team);
-            if (existingTeam == null) {
-                ModLogger.warn("队伍 " + team + " 不存在，请先使用原版命令创建队伍");
-                return false;
-            }
-        } else {
-            ModLogger.warn("无法获取服务器实例，无法检查队伍是否存在");
-            return false;
-        }
-        
-        // 检查是否已经有队伍设置了该角色
-        for (Map.Entry<String, String> entry : teamRoles.entrySet()) {
-            if (entry.getValue().equals(normalizedRole) && !entry.getKey().equals(team)) {
-                ModLogger.warn("已有队伍 " + entry.getKey() + " 被设置为 " + normalizedRole + " 角色，无法再设置其他队伍为该角色");
-                return false;
-            }
-        }
-        
-        teamRoles.put(team, normalizedRole);
-        teamReinforcements.put(team, reinforcements);
-        teamInitialReinforcements.put(team, reinforcements); // 保存初始兵力值
-        ModLogger.info("队伍 " + team + " 已设置为 " + normalizedRole + " 角色，兵力：" + reinforcements);
+
+        String canonicalTeam = "attacker".equals(normalizedRole)
+                ? EspetroTeamBridge.ATTACK
+                : EspetroTeamBridge.DEFEND;
+
+        teamRoles.put(canonicalTeam, normalizedRole);
+        teamReinforcements.put(canonicalTeam, reinforcements);
+        teamInitialReinforcements.put(canonicalTeam, reinforcements); // 保存初始兵力值
+        ModLogger.info("Espetro 阵营 " + canonicalTeam + " 已绑定为 " + normalizedRole + " 角色，兵力：" + reinforcements);
         
         // 同步到客户端
         syncOperationModeToClients();
         return true;
+    }
+
+    /**
+     * 将 HCRpoints 队伍关系固定绑定到 Espetro 的 ATTACK/DEFEND 阵营。
+     */
+    public void bindEspetroTeams() {
+        teamRoles.put(EspetroTeamBridge.ATTACK, "attacker");
+        teamRoles.put(EspetroTeamBridge.DEFEND, "defender");
+        teamReinforcements.putIfAbsent(EspetroTeamBridge.ATTACK, 50);
+        teamReinforcements.putIfAbsent(EspetroTeamBridge.DEFEND, 50);
+        teamInitialReinforcements.putIfAbsent(EspetroTeamBridge.ATTACK, 50);
+        teamInitialReinforcements.putIfAbsent(EspetroTeamBridge.DEFEND, 50);
     }
     
     /**
@@ -425,18 +399,8 @@ public class CapturePointManager {
      * @return 如果同时存在进攻方和防守方则返回true，否则返回false
      */
     public boolean hasBothRolesSet() {
-        boolean hasAttacker = false;
-        boolean hasDefender = false;
-        
-        for (String role : teamRoles.values()) {
-            if (role.equals("attacker")) {
-                hasAttacker = true;
-            } else if (role.equals("defender")) {
-                hasDefender = true;
-            }
-        }
-        
-        return hasAttacker && hasDefender;
+        bindEspetroTeams();
+        return true;
     }
     
     /**
@@ -444,12 +408,7 @@ public class CapturePointManager {
      * @return 进攻方队伍名称，如果没有则返回null
      */
     public String getAttackerTeam() {
-        for (Map.Entry<String, String> entry : teamRoles.entrySet()) {
-            if (entry.getValue().equals("attacker")) {
-                return entry.getKey();
-            }
-        }
-        return null;
+        return EspetroTeamBridge.ATTACK;
     }
     
     /**
@@ -457,12 +416,7 @@ public class CapturePointManager {
      * @return 防守方队伍名称，如果没有则返回null
      */
     public String getDefenderTeam() {
-        for (Map.Entry<String, String> entry : teamRoles.entrySet()) {
-            if (entry.getValue().equals("defender")) {
-                return entry.getKey();
-            }
-        }
-        return null;
+        return EspetroTeamBridge.DEFEND;
     }
     
     /**
@@ -471,7 +425,9 @@ public class CapturePointManager {
      * @return 队伍兵力，如果队伍不存在则返回0
      */
     public int getTeamReinforcements(String team) {
-        return teamReinforcements.getOrDefault(team, 0);
+        bindEspetroTeams();
+        String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(team);
+        return canonicalTeam != null ? teamReinforcements.getOrDefault(canonicalTeam, 0) : 0;
     }
     
     /**
@@ -480,7 +436,9 @@ public class CapturePointManager {
      * @return 队伍初始兵力，如果队伍不存在则返回0
      */
     public int getTeamInitialReinforcements(String team) {
-        return teamInitialReinforcements.getOrDefault(team, 0);
+        bindEspetroTeams();
+        String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(team);
+        return canonicalTeam != null ? teamInitialReinforcements.getOrDefault(canonicalTeam, 0) : 0;
     }
     
     /**
@@ -490,15 +448,16 @@ public class CapturePointManager {
      * @return 扣除后的兵力，返回-1表示队伍不存在
      */
     public int deductTeamReinforcements(String team, int amount) {
-        if (!teamReinforcements.containsKey(team)) {
+        String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(team);
+        if (canonicalTeam == null || !teamReinforcements.containsKey(canonicalTeam)) {
             return -1;
         }
         
-        int currentReinforcements = teamReinforcements.get(team);
+        int currentReinforcements = teamReinforcements.get(canonicalTeam);
         int newReinforcements = Math.max(0, currentReinforcements - amount);
-        teamReinforcements.put(team, newReinforcements);
+        teamReinforcements.put(canonicalTeam, newReinforcements);
         
-        ModLogger.info("队伍 " + team + " 兵力减少 " + amount + "，剩余兵力：" + newReinforcements);
+        ModLogger.info("队伍 " + canonicalTeam + " 兵力减少 " + amount + "，剩余兵力：" + newReinforcements);
         
         // 检查胜负条件
         checkWinLossCondition();
@@ -517,8 +476,12 @@ public class CapturePointManager {
      * @param team 队伍名称
      */
     public void clearTeamReinforcements(String team) {
-        teamReinforcements.put(team, 0);
-        ModLogger.info("队伍 " + team + " 兵力已清空");
+        String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(team);
+        if (canonicalTeam == null) {
+            return;
+        }
+        teamReinforcements.put(canonicalTeam, 0);
+        ModLogger.info("队伍 " + canonicalTeam + " 兵力已清空");
         
         // 检查胜负条件
         checkWinLossCondition();
@@ -606,8 +569,11 @@ public class CapturePointManager {
     private void endOperationModeWithResult(String winnerTeam, String loserTeam) {
         MinecraftServer server = HCRPointsMod.getServer();
         if (server == null) return;
+
+        String canonicalWinner = EspetroTeamBridge.canonicalizeTeamName(winnerTeam);
+        String canonicalLoser = EspetroTeamBridge.canonicalizeTeamName(loserTeam);
         
-        ModLogger.info("行动结束：" + winnerTeam + " 胜利，" + loserTeam + " 失败");
+        ModLogger.info("行动结束：" + canonicalWinner + " 胜利，" + canonicalLoser + " 失败");
         
         // 发送停止音频的消息，让音频在5秒内逐渐减小音量到停止播放
         com.example.hcrpoints.network.PlayLowReinforcementAudioMessage.broadcastToAll(false);
@@ -617,18 +583,18 @@ public class CapturePointManager {
         
         // 为胜利队伍和失败队伍的玩家设置HUD计时器
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            Team playerTeam = player.getTeam();
-            if (playerTeam != null) {
-                String playerTeamName = playerTeam.getName();
-                if (playerTeamName.equals(winnerTeam)) {
-                    // 使用网络消息直接通知客户端显示胜利消息
-                    com.example.hcrpoints.api.HCRAPI.showWinMessage(player.getUUID());
-                    player.sendSystemMessage(Component.literal("你的队伍胜利了！"));
-                } else if (playerTeamName.equals(loserTeam)) {
-                    // 使用网络消息直接通知客户端显示失败消息
-                    com.example.hcrpoints.api.HCRAPI.showLoseMessage(player.getUUID());
-                    player.sendSystemMessage(Component.literal("你的队伍失败了！"));
-                }
+            String playerTeamName = EspetroTeamBridge.getServerPlayerTeam(player);
+            if (playerTeamName == null) {
+                continue;
+            }
+            if (playerTeamName.equals(canonicalWinner)) {
+                // 使用网络消息直接通知客户端显示胜利消息
+                com.example.hcrpoints.api.HCRAPI.showWinMessage(player.getUUID());
+                player.sendSystemMessage(Component.literal("你的队伍胜利了！"));
+            } else if (playerTeamName.equals(canonicalLoser)) {
+                // 使用网络消息直接通知客户端显示失败消息
+                com.example.hcrpoints.api.HCRAPI.showLoseMessage(player.getUUID());
+                player.sendSystemMessage(Component.literal("你的队伍失败了！"));
             }
         }
         
@@ -650,10 +616,12 @@ public class CapturePointManager {
      * @param endBehavior 结束行为：terminate(终止)或loop(循环)
      */
     public void startOperationMode(int totalBatches, String endBehavior) {
+        bindEspetroTeams();
         currentBatch = 1;
         this.totalBatches = totalBatches;
         this.endBehavior = endBehavior.toLowerCase();
         operationModeRunning = true;
+        operationPointSnapshots.clear();
         
         // 重置所有队伍的兵力，将当前兵力恢复为初始兵力
         for (String team : teamInitialReinforcements.keySet()) {
@@ -662,42 +630,12 @@ public class CapturePointManager {
             ModLogger.info("队伍 " + team + " 兵力已重置为初始值：" + initialReinforcements);
         }
         
-        // 检查并警告不在攻方或守方队伍中的玩家
+        // 不属于 Espetro 攻防阵营的玩家视作观战者，不参与占点。
         MinecraftServer server = HCRPointsMod.getServer();
         if (server != null) {
-            // 获取攻方和守方队伍名称
-            String attackerTeam = getAttackerTeam();
-            String defenderTeam = getDefenderTeam();
-            
-            // 遍历所有在线玩家
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                // 检查玩家是否在队伍中
-                Team playerTeam = player.getTeam();
-                if (playerTeam != null) {
-                    String playerTeamName = playerTeam.getName();
-                    
-                    // 检查玩家队伍是否属于攻方或守方
-                    boolean isInValidTeam = false;
-                    if (attackerTeam != null && playerTeamName.equals(attackerTeam)) {
-                        isInValidTeam = true;
-                    } else if (defenderTeam != null && playerTeamName.equals(defenderTeam)) {
-                        isInValidTeam = true;
-                    }
-                    
-                    // 如果玩家在队伍中但不属于攻方或守方，发送警告
-                    if (!isInValidTeam) {
-                        // 向玩家发送警告
-                        player.sendSystemMessage(Component.literal("警告：你当前所在的队伍不属于攻方或守方，无法参与行动！请更换队伍。"));
-                        
-                        // 向管理员发送警告
-                        for (ServerPlayer admin : server.getPlayerList().getPlayers()) {
-                            if (admin.hasPermissions(2)) { // 拥有管理员权限的玩家
-                                admin.sendSystemMessage(Component.literal("警告：玩家 " + player.getName().getString() + " 所在的队伍 " + playerTeamName + " 不属于攻方或守方，请及时处理！"));
-                            }
-                        }
-                        
-                        ModLogger.warn("玩家 " + player.getName().getString() + " 所在的队伍 " + playerTeamName + " 不属于攻方或守方，无法参与行动！");
-                    }
+                if (!EspetroTeamBridge.isEspetroTeamPlayer(player)) {
+                    ModLogger.info("玩家 " + player.getName().getString() + " 未加入 Espetro 阵营，被视为观战者");
                 }
             }
         }
@@ -829,6 +767,7 @@ public class CapturePointManager {
         }
         
         if (hasNextBatch) {
+            snapshotCurrentOperationPoints();
             currentBatch = nextBatch;
             
             // 创建下一批次的据点
@@ -928,7 +867,7 @@ public class CapturePointManager {
         boolean allCapturedByAttacker = true;
         for (CapturePoint point : currentPoints) {
             if (point.getState() != CaptureState.CAPTURED || 
-                !point.getCaptorName().equals(attackerTeam)) {
+                !EspetroTeamBridge.isSameTeam(point.getCaptorName(), attackerTeam)) {
                 allCapturedByAttacker = false;
                 break;
             }
@@ -937,14 +876,20 @@ public class CapturePointManager {
         // 如果所有据点都被进攻方占领，处理批次推进或结束
         if (allCapturedByAttacker) {
             // 每完成一个批次，给进攻方增加200兵力
-            TroopCountManager.getInstance().modifyAttackTroops(200);
-            ModLogger.info("批次 " + currentBatch + " 完成，已通过 Espetro 最新兵力接口为进攻方增加 200 兵力");
+            if (grantEspetroAttackReinforcement(BATCH_COMPLETION_ATTACK_REINFORCEMENT)) {
+                ModLogger.info("批次 " + currentBatch + " 完成，已通过 Espetro 兵力接口为进攻方增加 " + BATCH_COMPLETION_ATTACK_REINFORCEMENT + " 兵力");
+            } else {
+                ModLogger.info("批次 " + currentBatch + " 完成，未检测到 Espetro，跳过进攻方兵力增援");
+            }
             
             // 向所有进攻方玩家发送批次完成消息
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                Team playerTeam = player.getTeam();
-                if (playerTeam != null && playerTeam.getName().equals(attackerTeam)) {
-                    player.sendSystemMessage(Component.literal("§6[据点] §e第 " + currentBatch + " 批次据点已全部占领！进攻方获得 200 兵力增援！"));
+                String playerTeam = EspetroTeamBridge.getServerPlayerTeam(player);
+                if (attackerTeam.equals(playerTeam)) {
+                    String reinforcementText = ModList.get().isLoaded(ESPETRO_MOD_ID)
+                            ? "进攻方获得 " + BATCH_COMPLETION_ATTACK_REINFORCEMENT + " 兵力增援！"
+                            : "未安装 Espetro，跳过兵力增援。";
+                    player.sendSystemMessage(Component.literal("§6[据点] §e第 " + currentBatch + " 批次据点已全部占领！" + reinforcementText));
                 }
             }
             
@@ -972,6 +917,22 @@ public class CapturePointManager {
                 ModLogger.info("当前批次 " + currentBatch + " 所有据点已被进攻方占领，准备进入下一批次");
                 nextBatch();
             }
+        }
+    }
+
+    private boolean grantEspetroAttackReinforcement(int amount) {
+        if (!ModList.get().isLoaded(ESPETRO_MOD_ID)) {
+            return false;
+        }
+
+        try {
+            Class<?> managerClass = Class.forName(ESPETRO_TROOP_COUNT_MANAGER_CLASS);
+            Object manager = managerClass.getMethod("getInstance").invoke(null);
+            managerClass.getMethod("modifyAttackTroops", int.class).invoke(manager, amount);
+            return true;
+        } catch (Exception e) {
+            ModLogger.warn("调用 Espetro 兵力接口失败，已跳过进攻方兵力增援: " + e.getMessage());
+            return false;
         }
     }
     
@@ -1009,7 +970,7 @@ public class CapturePointManager {
      * @return 行动模式是否正在运行
      */
     public boolean isOperationModeRunning() {
-        return ModConfig.enableOperationMode.get() && operationModeRunning;
+        return operationModeRunning;
     }
     
     /**
@@ -1033,6 +994,7 @@ public class CapturePointManager {
      * @return 队伍角色映射
      */
     public Map<String, String> getTeamRoles() {
+        bindEspetroTeams();
         return teamRoles;
     }
     
@@ -1041,6 +1003,7 @@ public class CapturePointManager {
      * @return 队伍兵力映射
      */
     public Map<String, Integer> getTeamReinforcementsMap() {
+        bindEspetroTeams();
         return teamReinforcements;
     }
     
@@ -1051,7 +1014,8 @@ public class CapturePointManager {
         teamRoles.clear();
         teamReinforcements.clear();
         teamInitialReinforcements.clear();
-        ModLogger.info("所有队伍角色和兵力已清空");
+        bindEspetroTeams();
+        ModLogger.info("队伍角色已重置为 Espetro 攻防阵营");
         
         // 同步到客户端
         syncOperationModeToClients();
@@ -1077,13 +1041,14 @@ public class CapturePointManager {
         this.endBehavior = endBehavior;
         
         this.teamRoles.clear();
-        this.teamRoles.putAll(teamRoles);
+        this.teamRoles.putAll(normalizeTeamRoleMap(teamRoles));
         
         this.teamReinforcements.clear();
-        this.teamReinforcements.putAll(teamReinforcements);
+        this.teamReinforcements.putAll(normalizeTeamIntegerMap(teamReinforcements));
         
         this.teamInitialReinforcements.clear();
-        this.teamInitialReinforcements.putAll(teamInitialReinforcements);
+        this.teamInitialReinforcements.putAll(normalizeTeamIntegerMap(teamInitialReinforcements));
+        bindEspetroTeams();
         
         ModLogger.info("客户端行动模式状态已同步");
     }
@@ -1095,6 +1060,8 @@ public class CapturePointManager {
         if (!HCRPointsMod.isServerRunning()) {
             return;
         }
+
+        bindEspetroTeams();
         
         com.example.hcrpoints.network.SyncOperationModeMessage.broadcastToAll(
             operationModeRunning,
@@ -1106,6 +1073,43 @@ public class CapturePointManager {
             teamInitialReinforcements
         );
     }
+
+    private Map<String, String> normalizeTeamRoleMap(Map<String, String> roles) {
+        Map<String, String> normalizedRoles = new HashMap<>();
+        if (roles != null) {
+            for (Map.Entry<String, String> entry : roles.entrySet()) {
+                String role = entry.getValue() == null ? "" : entry.getValue().toLowerCase(Locale.ROOT);
+                if (!"attacker".equals(role) && !"defender".equals(role)) {
+                    continue;
+                }
+
+                String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(entry.getKey());
+                if (canonicalTeam == null) {
+                    canonicalTeam = "attacker".equals(role) ? EspetroTeamBridge.ATTACK : EspetroTeamBridge.DEFEND;
+                }
+                normalizedRoles.put(canonicalTeam, role);
+            }
+        }
+        normalizedRoles.put(EspetroTeamBridge.ATTACK, "attacker");
+        normalizedRoles.put(EspetroTeamBridge.DEFEND, "defender");
+        return normalizedRoles;
+    }
+
+    private Map<String, Integer> normalizeTeamIntegerMap(Map<String, Integer> values) {
+        Map<String, Integer> normalizedValues = new HashMap<>();
+        if (values != null) {
+            for (Map.Entry<String, Integer> entry : values.entrySet()) {
+                String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(entry.getKey());
+                Integer value = entry.getValue();
+                if (canonicalTeam != null && value != null) {
+                    normalizedValues.put(canonicalTeam, value);
+                }
+            }
+        }
+        normalizedValues.putIfAbsent(EspetroTeamBridge.ATTACK, 50);
+        normalizedValues.putIfAbsent(EspetroTeamBridge.DEFEND, 50);
+        return normalizedValues;
+    }
     
     /**
      * 从映射中恢复计划据点
@@ -1114,6 +1118,7 @@ public class CapturePointManager {
     public void restorePlannedPointsFromMap(Map<String, PlannedCapturePoint> plannedPointsMap) {
         this.plannedPointsMap.clear();
         this.plannedPointsMap.putAll(plannedPointsMap);
+        this.operationPointSnapshots.keySet().removeIf(pointName -> !this.plannedPointsMap.containsKey(pointName));
         ModLogger.info("已恢复 " + plannedPointsMap.size() + " 个计划据点");
     }
     
@@ -1123,8 +1128,9 @@ public class CapturePointManager {
      */
     public void restoreTeamRolesFromMap(Map<String, String> teamRoles) {
         this.teamRoles.clear();
-        this.teamRoles.putAll(teamRoles);
-        ModLogger.info("已恢复 " + teamRoles.size() + " 个队伍角色设置");
+        this.teamRoles.putAll(normalizeTeamRoleMap(teamRoles));
+        bindEspetroTeams();
+        ModLogger.info("已恢复并绑定 Espetro 攻防阵营队伍角色");
     }
     
     /**
@@ -1174,28 +1180,29 @@ public class CapturePointManager {
             List<Player> playersInPoint = new ArrayList<>();
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
                 if (point.isPositionInside(player.blockPosition())) {
-                    // 如果启用队伍机制，检查玩家是否在队伍中，不在队伍中则视为观众，忽略
-                    if (!ModConfig.enableTeams.get() || isPlayerInTeam(player)) {
-                        playersInPoint.add(player);
+                    // 只有 Espetro 攻防阵营玩家参与占领，其他玩家视为观战者。
+                    if (!isPlayerInTeam(player)) {
+                        continue;
+                    }
+                    playersInPoint.add(player);
+                    
+                    // 记录玩家进入据点的时间
+                    UUID playerUUID = player.getUUID();
+                    if (!playerEnterTime.containsKey(playerUUID)) {
+                        playerEnterTime.put(playerUUID, System.currentTimeMillis());
+                    } else {
+                        // 检查是否需要给予奖励
+                        long enterTime = playerEnterTime.get(playerUUID);
+                        long currentTime = System.currentTimeMillis();
+                        long interval = ModConfig.pointRewardInterval.get() * 1000L; // 转换为毫秒
                         
-                        // 记录玩家进入据点的时间
-                        UUID playerUUID = player.getUUID();
-                        if (!playerEnterTime.containsKey(playerUUID)) {
-                            playerEnterTime.put(playerUUID, System.currentTimeMillis());
-                        } else {
-                            // 检查是否需要给予奖励
-                            long enterTime = playerEnterTime.get(playerUUID);
-                            long currentTime = System.currentTimeMillis();
-                            long interval = ModConfig.pointRewardInterval.get() * 1000L; // 转换为毫秒
+                        if (currentTime - enterTime >= interval) {
+                            // 给予玩家奖励
+                            int rewardAmount = ModConfig.pointRewardAmount.get();
+                            addPointsToPlayer(player, rewardAmount, "据点奖励");
                             
-                            if (currentTime - enterTime >= interval) {
-                                // 给予玩家奖励
-                                int rewardAmount = ModConfig.pointRewardAmount.get();
-                                addPointsToPlayer(player, rewardAmount, "据点奖励");
-                                
-                                // 更新进入时间
-                                playerEnterTime.put(playerUUID, currentTime);
-                            }
+                            // 更新进入时间
+                            playerEnterTime.put(playerUUID, currentTime);
                         }
                     }
                 } else {
@@ -1212,32 +1219,8 @@ public class CapturePointManager {
             // 更新据点状态
             point.updateStatus(playersInPoint);
             
-            // 处理进度恢复计时器
-            long currentTime = System.currentTimeMillis();
-            if (point.getState() == CaptureState.CAPTURED) {
-                // 据点被占领，清除恢复计时器
-                progressRecoveryTimers.remove(point);
-            } else if (oldState == CaptureState.CAPTURED && point.getState() != CaptureState.CAPTURED) {
-                // 据点失去占领状态，启动恢复计时器
-                // 中立状态和降旗状态不需要恢复计时器
-                if (point.getState() != CaptureState.NEUTRAL && point.getState() != CaptureState.CAPTURING_DOWN) {
-                    progressRecoveryTimers.put(point, currentTime);
-                }
-            } else if (point.getState() != CaptureState.CAPTURED && progressRecoveryTimers.containsKey(point)) {
-                // 检查恢复时间是否到达
-                // 中立状态和降旗状态不需要恢复进度
-                if (point.getState() == CaptureState.NEUTRAL || point.getState() == CaptureState.CAPTURING_DOWN) {
-                    progressRecoveryTimers.remove(point);
-                } else {
-                    long startTime = progressRecoveryTimers.get(point);
-                    if (currentTime - startTime >= 5000) { // 5秒后恢复
-                        // 将进度重置为100%
-                        point.setProgress(100);
-                        progressRecoveryTimers.remove(point);
-                        shouldSync = true;
-                    }
-                }
-            }
+            // 进度现在完全由点内双方人数优势推动，旧的争夺后自动回满计时器只做清理。
+            progressRecoveryTimers.remove(point);
             
             // 检查状态是否发生变化
                 if (oldState != point.getState() || 
@@ -1352,6 +1335,7 @@ public class CapturePointManager {
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
                 SyncCapturePointsMessage.sendToPlayer(player, getSerializablePointsForMap(player));
             }
+            com.example.hcrpoints.network.SyncCapturePointOverviewMessage.broadcastToAll(getOverviewSerializablePoints());
         } catch (Exception e) {
             ModLogger.error("同步据点数据到所有客户端时发生异常: " + e.getMessage());
         }
@@ -1378,23 +1362,51 @@ public class CapturePointManager {
     }
 
     /**
+     * 获取据点总览使用的完整数据，不受战术地图视野规则限制。
+     */
+    public List<CapturePoint.SerializableCapturePoint> getOverviewSerializablePoints() {
+        if (plannedPointsMap.isEmpty()) {
+            List<CapturePoint.SerializableCapturePoint> points = getAllSerializablePoints();
+            points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
+                    .thenComparing(point -> point.name));
+            return points;
+        }
+
+        String defenderTeam = getDefenderTeam();
+        List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>();
+        for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
+            CapturePoint activePoint = capturePoints.get(plannedPoint.getName());
+            if (activePoint != null) {
+                points.add(activePoint.toSerializable());
+                continue;
+            }
+
+            CapturePoint.SerializableCapturePoint snapshot = operationPointSnapshots.get(plannedPoint.getName());
+            points.add(snapshot != null ? snapshot : serializableFromPlannedPoint(plannedPoint, defenderTeam));
+        }
+
+        points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
+                .thenComparing(point -> point.name));
+        return points;
+    }
+
+    /**
      * 根据玩家攻守身份生成战术地图可见据点。
      */
     private List<CapturePoint.SerializableCapturePoint> getSerializablePointsForMap(ServerPlayer player) {
-        if (!ModConfig.enableOperationMode.get() || !operationModeRunning) {
+        if (!operationModeRunning) {
             return getAllSerializablePoints();
         }
 
-        Team playerTeam = player.getTeam();
-        String playerTeamName = playerTeam != null ? playerTeam.getName() : "";
+        String playerTeamName = EspetroTeamBridge.getServerPlayerTeam(player);
         String attackerTeam = getAttackerTeam();
         String defenderTeam = getDefenderTeam();
 
-        if (playerTeamName.equals(defenderTeam)) {
+        if (defenderTeam.equals(playerTeamName)) {
             return getAllPlannedPointsForMap(defenderTeam);
         }
 
-        if (playerTeamName.equals(attackerTeam)) {
+        if (attackerTeam.equals(playerTeamName)) {
             return getAttackerVisiblePointsForMap(attackerTeam, defenderTeam);
         }
 
@@ -1408,7 +1420,8 @@ public class CapturePointManager {
             if (activePoint != null) {
                 points.add(activePoint.toSerializable());
             } else {
-                points.add(serializableFromPlannedPoint(plannedPoint, defenderTeam));
+                CapturePoint.SerializableCapturePoint snapshot = operationPointSnapshots.get(plannedPoint.getName());
+                points.add(snapshot != null ? snapshot : serializableFromPlannedPoint(plannedPoint, defenderTeam));
             }
         }
         points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
@@ -1420,25 +1433,33 @@ public class CapturePointManager {
         List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>();
         for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
             if (plannedPoint.getBatch() < currentBatch) {
-                points.add(serializableFromPlannedPoint(
-                        plannedPoint,
-                        attackerTeam,
-                        CaptureState.CAPTURED,
-                        DisplayState.CAPTURED,
-                        100
-                ));
+                CapturePoint.SerializableCapturePoint snapshot = operationPointSnapshots.get(plannedPoint.getName());
+                points.add(snapshot != null ? snapshot : serializableFromPlannedPoint(
+                                plannedPoint,
+                                attackerTeam,
+                                CaptureState.CAPTURED,
+                                DisplayState.CAPTURED,
+                                100
+                        ));
             } else if (plannedPoint.getBatch() == currentBatch) {
                 CapturePoint activePoint = capturePoints.get(plannedPoint.getName());
                 if (activePoint != null) {
                     points.add(activePoint.toSerializable());
                 } else {
-                    points.add(serializableFromPlannedPoint(plannedPoint, defenderTeam));
+                    CapturePoint.SerializableCapturePoint snapshot = operationPointSnapshots.get(plannedPoint.getName());
+                    points.add(snapshot != null ? snapshot : serializableFromPlannedPoint(plannedPoint, defenderTeam));
                 }
             }
         }
         points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
                 .thenComparing(point -> point.name));
         return points;
+    }
+
+    private void snapshotCurrentOperationPoints() {
+        for (CapturePoint point : capturePoints.values()) {
+            operationPointSnapshots.put(point.getName(), point.toSerializable());
+        }
     }
 
     private List<CapturePoint.SerializableCapturePoint> getCurrentBatchSerializablePoints() {
@@ -1559,9 +1580,9 @@ public class CapturePointManager {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             UUID playerUUID = player.getUUID();
             String playerName = player.getName().getString();
-            Team playerTeam = player.getTeam();
-            String teamName = playerTeam != null ? playerTeam.getName() : "";
+            String teamName = Optional.ofNullable(EspetroTeamBridge.getServerPlayerTeam(player)).orElse("");
             syncMapDataIfPlayerTeamChanged(player, teamName);
+            syncEspetroBastionsToPlayer(player);
             
             // 创建玩家位置对象
             com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = new com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition(
@@ -1569,7 +1590,8 @@ public class CapturePointManager {
                 player.getY(),
                 player.getZ(),
                 playerName,
-                teamName
+                teamName,
+                player.getYRot()
             );
             
             positions.put(playerUUID, pos);
@@ -1596,8 +1618,7 @@ public class CapturePointManager {
         for (ServerPlayer onlinePlayer : server.getPlayerList().getPlayers()) {
             UUID playerUUID = onlinePlayer.getUUID();
             String playerName = onlinePlayer.getName().getString();
-            Team playerTeam = onlinePlayer.getTeam();
-            String teamName = playerTeam != null ? playerTeam.getName() : "";
+            String teamName = Optional.ofNullable(EspetroTeamBridge.getServerPlayerTeam(onlinePlayer)).orElse("");
             
             // 创建玩家位置对象
             com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = new com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition(
@@ -1605,7 +1626,8 @@ public class CapturePointManager {
                 onlinePlayer.getY(),
                 onlinePlayer.getZ(),
                 playerName,
-                teamName
+                teamName,
+                onlinePlayer.getYRot()
             );
             
             positions.put(playerUUID, pos);
@@ -1619,7 +1641,178 @@ public class CapturePointManager {
         
         ModLogger.info("已向玩家 " + player.getName().getString() + " 发送所有在线玩家位置数据");
     }
-    
+
+    private void syncEspetroBastionsToPlayer(ServerPlayer player) {
+        SyncBastionsMessage.sendToPlayer(
+            player,
+            getVisibleEspetroBastions(player),
+            getVisibleEspetroBases(player)
+        );
+    }
+
+    private List<SyncBastionsMessage.BastionInfo> getVisibleEspetroBastions(ServerPlayer player) {
+        List<SyncBastionsMessage.BastionInfo> visibleBastions = new ArrayList<>();
+        if (!ModList.get().isLoaded(ESPETRO_MOD_ID)) {
+            return visibleBastions;
+        }
+
+        try {
+            String visibleTeam = getVisibleEspetroBastionTeam(player);
+            if (visibleTeam == null || visibleTeam.isEmpty()) {
+                return visibleBastions;
+            }
+
+            Class<?> managerClass = Class.forName(ESPETRO_BASTION_MANAGER_CLASS);
+            Object manager = managerClass.getMethod("getInstance").invoke(null);
+            Method getTeamBastionsMethod = managerClass.getMethod("getTeamBastions", String.class);
+            Iterable<?> bastions = (Iterable<?>) getTeamBastionsMethod.invoke(manager, visibleTeam);
+
+            for (Object bastion : bastions) {
+                if (bastion == null) {
+                    continue;
+                }
+
+                if (!isEspetroBastionActive(bastion)) {
+                    continue;
+                }
+
+                BlockPos pos = getEspetroBastionPosition(managerClass, manager, bastion);
+                if (pos == null) {
+                    continue;
+                }
+
+                String bastionTeam = (String) bastion.getClass().getMethod("getTeam").invoke(bastion);
+                if (!visibleTeam.equals(bastionTeam)) {
+                    continue;
+                }
+
+                String name = (String) bastion.getClass().getMethod("getName").invoke(bastion);
+                visibleBastions.add(new SyncBastionsMessage.BastionInfo(name, bastionTeam, pos));
+            }
+        } catch (Exception e) {
+            ModLogger.warn("同步 Espetro 兵站信息失败，已跳过: " + e.getMessage());
+        }
+
+        return visibleBastions;
+    }
+
+    private List<SyncBastionsMessage.BaseInfo> getVisibleEspetroBases(ServerPlayer player) {
+        List<SyncBastionsMessage.BaseInfo> bases = new ArrayList<>();
+        if (!ModList.get().isLoaded(ESPETRO_MOD_ID)) {
+            return bases;
+        }
+
+        try {
+            Class<?> spawnPointConfigClass = Class.forName(ESPETRO_SPAWN_POINT_CONFIG_CLASS);
+            Method getAllSpawnPointsMethod = spawnPointConfigClass.getMethod("getAllSpawnPoints");
+            Object result = getAllSpawnPointsMethod.invoke(null);
+            if (!(result instanceof Map<?, ?> spawnPoints)) {
+                return bases;
+            }
+
+            for (Map.Entry<?, ?> entry : spawnPoints.entrySet()) {
+                String team = EspetroTeamBridge.canonicalizeTeamName(String.valueOf(entry.getKey()));
+                if (team == null) {
+                    continue;
+                }
+
+                Object spawnPoint = entry.getValue();
+                if (spawnPoint == null) {
+                    continue;
+                }
+
+                double x = readDoubleField(spawnPoint, "x");
+                double y = readDoubleField(spawnPoint, "y");
+                double z = readDoubleField(spawnPoint, "z");
+                float yaw = readFloatField(spawnPoint, "yaw");
+                BlockPos pos = BlockPos.containing(x, y, z);
+                bases.add(new SyncBastionsMessage.BaseInfo(
+                    EspetroTeamBridge.displayName(team) + "主基地",
+                    team,
+                    pos,
+                    yaw
+                ));
+            }
+        } catch (Exception e) {
+            ModLogger.warn("同步 Espetro 主基地信息失败，已跳过: " + e.getMessage());
+        }
+
+        return bases;
+    }
+
+    private double readDoubleField(Object target, String fieldName) throws ReflectiveOperationException {
+        Object value = target.getClass().getField(fieldName).get(target);
+        return value instanceof Number number ? number.doubleValue() : 0.0D;
+    }
+
+    private float readFloatField(Object target, String fieldName) throws ReflectiveOperationException {
+        Object value = target.getClass().getField(fieldName).get(target);
+        return value instanceof Number number ? number.floatValue() : 0.0F;
+    }
+
+    private String getVisibleEspetroBastionTeam(ServerPlayer player) throws ReflectiveOperationException {
+        return EspetroTeamBridge.getServerPlayerTeam(player);
+    }
+
+    private String getEspetroBastionTeamFromHcrTeamName(String teamName) {
+        return EspetroTeamBridge.canonicalizeTeamName(teamName);
+    }
+
+    private boolean isEspetroBastionActive(Object bastion) throws ReflectiveOperationException {
+        try {
+            Method method = bastion.getClass().getMethod("isActive");
+            Object result = method.invoke(bastion);
+            return !(result instanceof Boolean) || (Boolean) result;
+        } catch (NoSuchMethodException e) {
+            return true;
+        }
+    }
+
+    private BlockPos getEspetroBastionPosition(Class<?> managerClass, Object manager, Object bastion) throws ReflectiveOperationException {
+        Method recordedPositionMethod = findEspetroBastionPositionMethod(managerClass, bastion.getClass());
+        if (recordedPositionMethod != null) {
+            Object result = recordedPositionMethod.invoke(manager, bastion);
+            if (result instanceof BlockPos) {
+                return (BlockPos) result;
+            }
+        }
+
+        BlockPos armorStandPosition = invokeOptionalBlockPosGetter(bastion, "getArmorStandPosition");
+        if (armorStandPosition != null) {
+            return armorStandPosition;
+        }
+
+        BlockPos basePosition = invokeOptionalBlockPosGetter(bastion, "getPosition");
+        return basePosition != null ? basePosition.above() : null;
+    }
+
+    private Method findEspetroBastionPositionMethod(Class<?> managerClass, Class<?> bastionClass) {
+        for (Method method : managerClass.getMethods()) {
+            if (!"getRecordedArmorStandPosition".equals(method.getName()) || method.getParameterCount() != 1) {
+                continue;
+            }
+
+            Class<?> parameterType = method.getParameterTypes()[0];
+            if (parameterType.isAssignableFrom(bastionClass)) {
+                return method;
+            }
+        }
+
+        return null;
+    }
+
+    private BlockPos invokeOptionalBlockPosGetter(Object target, String methodName) throws ReflectiveOperationException {
+        Method method;
+        try {
+            method = target.getClass().getMethod(methodName);
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+
+        Object result = method.invoke(target);
+        return result instanceof BlockPos ? (BlockPos) result : null;
+    }
+
     /**
      * 处理玩家登录事件
      * @param event 玩家登录事件
@@ -1629,8 +1822,8 @@ public class CapturePointManager {
         if (event.getEntity() instanceof ServerPlayer) {
             ServerPlayer player = (ServerPlayer) event.getEntity();
             playerNameMap.put(player.getUUID(), player.getName().getString());
-            Team playerTeam = player.getTeam();
-            playerTeamNameMap.put(player.getUUID(), playerTeam != null ? playerTeam.getName() : "");
+            String playerTeam = Optional.ofNullable(EspetroTeamBridge.getServerPlayerTeam(player)).orElse("");
+            playerTeamNameMap.put(player.getUUID(), playerTeam);
             
             // 向新登录的玩家同步配置
             com.example.hcrpoints.network.SyncConfigMessage.sendToPlayer(player);
@@ -1640,6 +1833,7 @@ public class CapturePointManager {
             
             // 向新登录的玩家同步据点数据
             syncToClient(player);
+            com.example.hcrpoints.network.SyncCapturePointOverviewMessage.sendToPlayer(player, getOverviewSerializablePoints());
             
             // 立即向新登录的玩家同步所有玩家位置数据，解决中途加入玩家无法看到其他玩家的问题
             syncPlayerPositionsToPlayer(player);
@@ -1656,16 +1850,9 @@ public class CapturePointManager {
                 teamInitialReinforcements
             );
             
-            // 保险机制：当启用队伍机制时，检查玩家是否在队伍中
-            // 不在队伍中的玩家将被视为观众，只能查看据点状态，不能参与占领
-            if (ModConfig.enableTeams.get() && !isPlayerInTeam(player)) {
-                ModLogger.info("玩家 " + player.getName().getString() + " 未加入任何队伍，被视为观众");
-            }
-            
-            // 检查配置冲突：行动攻防机制启用但队伍机制未启用
-            if (ModConfig.enableOperationMode.get() && !ModConfig.enableTeams.get()) {
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal("警告：行动攻防机制已启用，但队伍机制未启用！这可能导致功能异常，请管理员启用队伍机制。"));
-                ModLogger.warn("玩家 " + player.getName().getString() + " 登录时检测到配置冲突：enableOperationMode=" + ModConfig.enableOperationMode.get() + ", enableTeams=" + ModConfig.enableTeams.get());
+            // 不在 Espetro 攻防阵营中的玩家视为观战者。
+            if (!isPlayerInTeam(player)) {
+                ModLogger.info("玩家 " + player.getName().getString() + " 未加入 Espetro 阵营，被视为观战者");
             }
         }
     }
@@ -1689,8 +1876,7 @@ public class CapturePointManager {
     public void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
         Player player = event.getEntity();
         playerNameMap.put(player.getUUID(), player.getName().getString());
-        Team playerTeam = player.getTeam();
-        playerTeamNameMap.put(player.getUUID(), playerTeam != null ? playerTeam.getName() : "");
+        playerTeamNameMap.put(player.getUUID(), Optional.ofNullable(EspetroTeamBridge.getPlayerTeam(player)).orElse(""));
     }
 
     private void syncMapDataIfPlayerTeamChanged(ServerPlayer player, String currentTeamName) {
@@ -1700,6 +1886,7 @@ public class CapturePointManager {
             ModLogger.info("玩家 " + player.getName().getString() + " 队伍从 " + previousTeamName + " 变更为 " + currentTeamName + "，重新同步战术地图据点视野");
             syncToClient(player);
             syncPlayerPositionsToPlayer(player);
+            syncEspetroBastionsToPlayer(player);
         }
     }
     
@@ -1709,28 +1896,87 @@ public class CapturePointManager {
      */
     @SubscribeEvent
     public void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.side == LogicalSide.SERVER) {
-            if (event.phase == TickEvent.Phase.END) {
-                // 每隔CHECK_INTERVAL tick检查一次据点状态
-                if (++tickCounter >= CHECK_INTERVAL) {
-                    tickCounter = 0;
-                    
-                    // 获取服务器实例
-                    MinecraftServer server = HCRPointsMod.getServer();
-                    if (server != null) {
-                        ServerLevel overworld = server.getLevel(ServerLevel.OVERWORLD);
-                        if (overworld != null) {
-                            updateAllCapturePoints(overworld);
-                        }
-                    }
+        if (event.side != LogicalSide.SERVER || event.phase != TickEvent.Phase.END) {
+            return;
+        }
+
+        updateCapturePointsForEspetroDeploying();
+
+        // 每隔CHECK_INTERVAL tick检查一次据点状态
+        if (++tickCounter >= CHECK_INTERVAL) {
+            tickCounter = 0;
+            
+            // 获取服务器实例
+            MinecraftServer server = HCRPointsMod.getServer();
+            if (server != null) {
+                ServerLevel overworld = server.getLevel(ServerLevel.OVERWORLD);
+                if (overworld != null) {
+                    updateAllCapturePoints(overworld);
                 }
             }
-            
-            // 每20tick（1秒）同步一次玩家位置，在START或END相位都可以执行
-            if (++playerPositionSyncTimer >= PLAYER_POSITION_SYNC_INTERVAL) {
-                playerPositionSyncTimer = 0;
-                syncPlayerPositions();
+        }
+        
+        // 每20tick（1秒）同步一次玩家位置和战术地图兵站信息
+        if (++playerPositionSyncTimer >= PLAYER_POSITION_SYNC_INTERVAL) {
+            playerPositionSyncTimer = 0;
+            syncPlayerPositions();
+        }
+    }
+
+    private void updateCapturePointsForEspetroDeploying() {
+        if (plannedPointsMap.isEmpty() || !ModList.get().isLoaded(ESPETRO_MOD_ID)) {
+            return;
+        }
+
+        String phaseName = getEspetroCurrentPhaseName();
+        if ("WAITING_FOR_PLAYERS".equals(phaseName)) {
+            espetroDeployingCapturePointsActivated = false;
+            return;
+        }
+
+        if (!"DEPLOYING".equals(phaseName)) {
+            return;
+        }
+
+        if (espetroDeployingCapturePointsActivated) {
+            if (operationModeRunning && capturePoints.isEmpty()) {
+                createCurrentBatchPoints();
+                syncOperationModeToClients();
             }
+            return;
+        }
+
+        espetroDeployingCapturePointsActivated = true;
+        if (!operationModeRunning) {
+            int detectedTotalBatches = totalBatches > 0 ? totalBatches : getMaxPlannedBatch();
+            if (detectedTotalBatches <= 0) {
+                return;
+            }
+            startOperationMode(detectedTotalBatches, endBehavior == null || endBehavior.isEmpty() ? "terminate" : endBehavior);
+            ModLogger.info("检测到 Espetro 进入部署阶段，已自动显示当前批次据点");
+        } else if (capturePoints.isEmpty()) {
+            createCurrentBatchPoints();
+            syncOperationModeToClients();
+            ModLogger.info("检测到 Espetro 进入部署阶段，已同步当前批次据点");
+        }
+    }
+
+    private int getMaxPlannedBatch() {
+        int maxBatch = 0;
+        for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
+            maxBatch = Math.max(maxBatch, plannedPoint.getBatch());
+        }
+        return maxBatch;
+    }
+
+    private String getEspetroCurrentPhaseName() {
+        try {
+            Class<?> managerClass = Class.forName(ESPETRO_GAME_STATE_MANAGER_CLASS);
+            Object manager = managerClass.getMethod("getInstance").invoke(null);
+            Object phase = managerClass.getMethod("getCurrentPhase").invoke(manager);
+            return phase instanceof Enum<?> enumPhase ? enumPhase.name() : String.valueOf(phase);
+        } catch (Exception e) {
+            return null;
         }
     }
     
@@ -1781,17 +2027,10 @@ public class CapturePointManager {
      * @return 如果是友军击杀返回true，否则返回false
      */
     private boolean isFriendlyFire(ServerPlayer killer, ServerPlayer victim) {
-        // 只有在队伍机制启用时才检查友军击杀
-        if (!ModConfig.enableTeams.get()) {
-            return false;
-        }
-        
-        // 获取双方队伍
-        Team killerTeam = killer.getTeam();
-        Team victimTeam = victim.getTeam();
-        
-        // 如果双方都在同一个队伍中，视为友军击杀
-        return killerTeam != null && victimTeam != null && killerTeam.equals(victimTeam);
+        return EspetroTeamBridge.isSameTeam(
+                EspetroTeamBridge.getServerPlayerTeam(killer),
+                EspetroTeamBridge.getServerPlayerTeam(victim)
+        );
     }
     
     /**
@@ -1870,6 +2109,7 @@ public class CapturePointManager {
         
         try {
             SyncCapturePointsMessage.sendToPlayer(player, getSerializablePointsForMap(player));
+            com.example.hcrpoints.network.SyncCapturePointOverviewMessage.sendToPlayer(player, getOverviewSerializablePoints());
         } catch (Exception e) {
             ModLogger.error("同步据点数据到客户端时发生异常: " + e.getMessage());
         }
@@ -1896,31 +2136,18 @@ public class CapturePointManager {
         }
         
         int rewardAmount = ModConfig.captureRewardAmount.get();
-        boolean isTeamCaptor = ModConfig.enableTeams.get();
+        String canonicalCaptor = EspetroTeamBridge.canonicalizeTeamName(captorName);
+        if (canonicalCaptor == null) {
+            return;
+        }
         
         // 向符合条件的玩家发放奖励
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            boolean shouldReward = false;
-            
             // 只有非观众玩家才能获得奖励
-            if (isTeamCaptor && !isPlayerInTeam(player)) {
+            if (!isPlayerInTeam(player)) {
                 continue; // 观众玩家，跳过
             }
-            
-            if (isTeamCaptor) {
-                // 队伍占领，检查玩家是否属于该队伍
-                Team playerTeam = player.getTeam();
-                if (playerTeam != null && playerTeam.getName().equals(captorName)) {
-                    shouldReward = true;
-                }
-            } else {
-                // 玩家占领，检查玩家名称是否匹配
-                if (player.getName().getString().equals(captorName)) {
-                    shouldReward = true;
-                }
-            }
-            
-            if (shouldReward) {
+            if (canonicalCaptor.equals(EspetroTeamBridge.getServerPlayerTeam(player))) {
                 // 给予玩家奖励
                 addPointsToPlayer(player, rewardAmount, "占领据点：" + pointName);
             }
@@ -1933,8 +2160,7 @@ public class CapturePointManager {
      * @return 是否在队伍中
      */
     private boolean isPlayerInTeam(ServerPlayer player) {
-        Team team = player.getTeam();
-        return team != null;
+        return EspetroTeamBridge.isEspetroTeamPlayer(player);
     }
     
     /**
@@ -1949,31 +2175,18 @@ public class CapturePointManager {
         }
         
         int rewardAmount = ModConfig.capturedRewardAmount.get();
-        boolean isTeamCaptor = ModConfig.enableTeams.get();
+        String canonicalCaptor = EspetroTeamBridge.canonicalizeTeamName(captorName);
+        if (canonicalCaptor == null) {
+            return;
+        }
         
         // 向符合条件的玩家发放奖励
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            boolean shouldReward = false;
-            
             // 只有非观众玩家才能获得奖励
-            if (isTeamCaptor && !isPlayerInTeam(player)) {
+            if (!isPlayerInTeam(player)) {
                 continue; // 观众玩家，跳过
             }
-            
-            if (isTeamCaptor) {
-                // 队伍占领，检查玩家是否属于该队伍
-                Team playerTeam = player.getTeam();
-                if (playerTeam != null && playerTeam.getName().equals(captorName)) {
-                    shouldReward = true;
-                }
-            } else {
-                // 玩家占领，检查玩家名称是否匹配
-                if (player.getName().getString().equals(captorName)) {
-                    shouldReward = true;
-                }
-            }
-            
-            if (shouldReward) {
+            if (canonicalCaptor.equals(EspetroTeamBridge.getServerPlayerTeam(player))) {
                 // 给予玩家奖励
                 addPointsToPlayer(player, rewardAmount, "持续占领据点：" + pointName);
             }

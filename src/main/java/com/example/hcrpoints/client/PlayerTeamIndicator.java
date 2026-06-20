@@ -1,6 +1,7 @@
 package com.example.hcrpoints.client;
 
 import com.example.hcrpoints.config.ModConfig;
+import com.example.hcrpoints.util.EspetroTeamBridge;
 import com.example.hcrpoints.util.ModLogger;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -154,18 +155,12 @@ public class PlayerTeamIndicator {
      * 判断是否为友军玩家
      */
     private static boolean isFriendlyPlayer(Team localTeam, Team targetTeam, Player targetPlayer) {
-        // 当前玩家没有队伍，所有玩家都是敌军
-        if (localTeam == null) {
-            return false;
-        }
-        
-        // 目标玩家没有队伍，是观众
-        if (targetTeam == null) {
-            return false;
-        }
-        
-        // 同一队伍，友军
-        return localTeam.equals(targetTeam);
+        Player localPlayer = Minecraft.getInstance().player;
+        return localPlayer != null
+                && EspetroTeamBridge.isSameTeam(
+                        EspetroTeamBridge.getPlayerTeam(localPlayer),
+                        EspetroTeamBridge.getPlayerTeam(targetPlayer)
+                );
     }
     
     /**
@@ -175,7 +170,7 @@ public class PlayerTeamIndicator {
         if (isFriendlyPlayer(localTeam, targetTeam, targetPlayer)) {
             // 友军：绿色
             return 0xFF55FF55;
-        } else if (targetTeam == null) {
+        } else if (EspetroTeamBridge.getPlayerTeam(targetPlayer) == null) {
             // 无队伍（观众）：灰色
             return 0xFFAAAAAA;
         } else {

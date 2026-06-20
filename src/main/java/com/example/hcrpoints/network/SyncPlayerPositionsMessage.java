@@ -29,17 +29,23 @@ public class SyncPlayerPositionsMessage {
         private final double z;
         private final String name;
         private final String teamName;
+        private final float yaw;
 
         public PlayerPosition(double x, double y, double z, String name) {
-            this(x, y, z, name, "");
+            this(x, y, z, name, "", 0.0F);
         }
 
         public PlayerPosition(double x, double y, double z, String name, String teamName) {
+            this(x, y, z, name, teamName, 0.0F);
+        }
+
+        public PlayerPosition(double x, double y, double z, String name, String teamName, float yaw) {
             this.x = x;
             this.y = y;
             this.z = z;
             this.name = name;
             this.teamName = teamName;
+            this.yaw = yaw;
         }
 
         public double getX() { return x; }
@@ -47,6 +53,7 @@ public class SyncPlayerPositionsMessage {
         public double getZ() { return z; }
         public String getName() { return name; }
         public String getTeamName() { return teamName; }
+        public float getYaw() { return yaw; }
     }
 
     /**
@@ -63,6 +70,7 @@ public class SyncPlayerPositionsMessage {
             buf.writeDouble(pos.getZ());
             buf.writeUtf(pos.getName());
             buf.writeUtf(pos.getTeamName());
+            buf.writeFloat(pos.getYaw());
         }
     }
 
@@ -79,7 +87,8 @@ public class SyncPlayerPositionsMessage {
             double z = buf.readDouble();
             String name = buf.readUtf();
             String teamName = buf.readUtf();
-            positions.put(uuid, new PlayerPosition(x, y, z, name, teamName));
+            float yaw = buf.readFloat();
+            positions.put(uuid, new PlayerPosition(x, y, z, name, teamName, yaw));
         }
         return new SyncPlayerPositionsMessage(positions);
     }

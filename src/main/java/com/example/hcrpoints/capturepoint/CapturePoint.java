@@ -1,10 +1,10 @@
 package com.example.hcrpoints.capturepoint;
 
+import com.example.hcrpoints.util.EspetroTeamBridge;
 import com.example.hcrpoints.util.ModLogger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.scores.Team;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -26,6 +26,7 @@ public class CapturePoint {
     private String captorName;           // 占领者名称
     private int progress;                // 占领进度 (0-100)
     private long capturedStateStartTime; // 已占领状态开始时间（用于进度恢复）
+    private static final int PROGRESS_STEP = 5;
     
     // 边界坐标（预计算以提高性能）
     private final int minX, minY, minZ;
@@ -136,173 +137,76 @@ public class CapturePoint {
      * 处理中立状态
      */
     private void handleNeutralState(List<ServerPlayer> playersInPoint) {
-        if (playersInPoint.isEmpty()) {
-            // 无玩家在场，保持中立状态
-            progress = 0;
-            captorName = ""; // 确保中立状态下没有占领者
-            ModLogger.info("据点 " + name + " 保持中立状态，无玩家在地图");
-        } else {
-            // 根据队伍分组
-            Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
-            
-            if (teamGroups.size() == 1) {
-                // 只有一个队伍在场，开始升旗
-                state = CaptureState.CAPTURING_FLAG;
-                // 从中立状态开始升旗时，进度必须从0开始，避免直接占领
-                progress = 5;
-                ModLogger.info("据点 " + name + " 开始升旗，进度: " + progress + "，队伍: " + teamGroups.keySet().iterator().next());
-            } else {
-                // 多个队伍在场，进入争夺状态
-                state = CaptureState.CAPTURING_CONTESTED;
-                ModLogger.info("据点 " + name + " 进入升旗争议状态，队伍数量: " + teamGroups.size());
-            }
+        Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
+        if (teamGroups.isEmpty()) {
+            resetToNeutral("据点 " + name + " 保持中立状态，无阵营玩家在点内");
+            return;
         }
+
+        pushNeutralProgressByMajority(teamGroups);
     }
     
     /**
      * 处理升旗状态
      */
     private void handleCapturingFlagState(List<ServerPlayer> playersInPoint) {
-        if (playersInPoint.isEmpty()) {
-            // 玩家全部离开，回到中立状态并重置进度
-            state = CaptureState.NEUTRAL;
-            progress = 0; // 重置进度为0，避免下一次进入时从高进度开始
-            captorName = ""; // 确保中立状态下没有占领者
-            ModLogger.info("据点 " + name + " 玩家离开，回到中立状态");
-        } else {
-            // 根据队伍分组
-            Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
-            
-            if (teamGroups.size() == 1) {
-                // 只有一个队伍在场
-                if (progress >= 100) {
-                    // 进度达到100%，据点被占领
-                    state = CaptureState.CAPTURED;
-                    capturedStateStartTime = 0; // 重置已占领状态开始时间
-                    // 如果启用队伍机制，使用队伍名称作为占领者，否则使用第一个玩家名称
-                    captorName = getCaptorName(teamGroups);
-                    ModLogger.info("据点 " + name + " 被占领，占领者: " + captorName);
-                } else {
-                    // 继续增加进度
-                    progress = Math.min(progress + 5, 100);
-                    ModLogger.info("据点 " + name + " 继续升旗，进度: " + progress + "，队伍: " + teamGroups.keySet().iterator().next());
-                }
-            } else {
-                // 出现多个队伍，进入争夺状态
-                state = CaptureState.CAPTURING_CONTESTED;
-                ModLogger.info("据点 " + name + " 出现多个队伍，进入升旗争夺状态，队伍数量: " + teamGroups.size());
-            }
+        Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
+        if (teamGroups.isEmpty()) {
+            resetToNeutral("据点 " + name + " 玩家离开，回到中立状态");
+            return;
         }
+
+        pushNeutralProgressByMajority(teamGroups);
     }
     
     /**
      * 处理争夺状态
      */
     private void handleContestedState(List<ServerPlayer> playersInPoint) {
-        if (playersInPoint.isEmpty()) {
+        Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
+        if (teamGroups.isEmpty()) {
             // 玩家全部离开，回到已占领状态
             state = CaptureState.CAPTURED;
             capturedStateStartTime = 0; // 重置已占领状态开始时间
             ModLogger.info("据点 " + name + " 玩家离开，回到已占领状态");
-        } else {
-            // 根据队伍分组
-            Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
-            
-            if (teamGroups.size() == 1) {
-                String teamName = teamGroups.keySet().iterator().next();
-                
-                if (teamName.equals(captorName) || teamGroups.values().iterator().next().get(0).getName().getString().equals(captorName)) {
-                    // 只有占领者队伍在场，回到已占领状态
-                    state = CaptureState.CAPTURED;
-                    capturedStateStartTime = 0; // 重置已占领状态开始时间
-                    ModLogger.info("据点 " + name + " 只有占领者队伍在场，回到已占领状态");
-                } else {
-                    // 只有非占领者队伍在场，开始降旗
-                    state = CaptureState.CAPTURING_DOWN;
-                    ModLogger.info("据点 " + name + " 只有非占领者队伍在场，开始降旗");
-                }
-            } else {
-                // 多个队伍在场，继续保持争夺状态
-                ModLogger.info("据点 " + name + " 仍有多个队伍在场，保持争夺状态，队伍数量: " + teamGroups.size());
-            }
+            return;
         }
+
+        pushCapturedProgressByMajority(teamGroups);
     }
     
     /**
      * 处理升旗争夺状态
      */
     private void handleCapturingContestedState(List<ServerPlayer> playersInPoint) {
-        if (playersInPoint.isEmpty()) {
-            // 玩家全部离开，回到中立状态
-            state = CaptureState.NEUTRAL;
-            progress = 0; // 重置进度为0，避免后续玩家快速占领
-            captorName = ""; // 确保中立状态下没有占领者
-            ModLogger.info("据点 " + name + " 玩家全部离开，回到中立状态");
-        } else {
-            // 根据队伍分组
-            Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
-            
-            if (teamGroups.size() == 1) {
-                // 只剩一个队伍，恢复升旗状态
-                state = CaptureState.CAPTURING_FLAG;
-                ModLogger.info("据点 " + name + " 只剩一个队伍，恢复升旗状态，队伍: " + teamGroups.keySet().iterator().next());
-            } else {
-                // 多个队伍在场，继续保持升旗争夺状态
-                ModLogger.info("据点 " + name + " 仍有多个队伍在场，保持升旗争夺状态，队伍数量: " + teamGroups.size());
-            }
+        Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
+        if (teamGroups.isEmpty()) {
+            resetToNeutral("据点 " + name + " 玩家全部离开，回到中立状态");
+            return;
         }
+
+        pushNeutralProgressByMajority(teamGroups);
     }
     
     /**
      * 处理降旗状态
      */
     private void handleCapturingDownState(List<ServerPlayer> playersInPoint) {
-        if (playersInPoint.isEmpty()) {
+        Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
+        if (teamGroups.isEmpty()) {
             // 玩家全部离开，根据当前进度决定状态
             if (progress <= 0) {
-                // 进度已经很低，回到中立状态
-                state = CaptureState.NEUTRAL;
-                captorName = "";
-                ModLogger.info("据点 " + name + " 玩家离开，进度已耗尽，回到中立状态");
+                resetToNeutral("据点 " + name + " 玩家离开，进度已耗尽，回到中立状态");
             } else {
                 // 进度还很高，回到已占领状态
                 state = CaptureState.CAPTURED;
                 capturedStateStartTime = 0; // 重置已占领状态开始时间
                 ModLogger.info("据点 " + name + " 玩家离开，进度仍高，回到已占领状态");
             }
-        } else {
-            // 根据队伍分组
-            Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
-            
-            if (teamGroups.size() == 1) {
-                String teamName = teamGroups.keySet().iterator().next();
-                List<ServerPlayer> teamPlayers = teamGroups.values().iterator().next();
-                String playerName = teamPlayers.get(0).getName().getString();
-                
-                if (teamName.equals(captorName) || playerName.equals(captorName)) {
-                    // 占领者队伍回来，回到已占领状态
-                    state = CaptureState.CAPTURED;
-                    capturedStateStartTime = 0; // 重置已占领状态开始时间
-                    ModLogger.info("据点 " + name + " 占领者队伍回来，回到已占领状态");
-                } else {
-                    // 继续降旗
-                    progress = Math.max(progress - 5, 0);
-                    ModLogger.info("据点 " + name + " 继续降旗，进度: " + progress);
-                    if (progress <= 0) {
-                        // 进度降到0，回到中立状态
-                        state = CaptureState.NEUTRAL;
-                        captorName = "";
-                        progress = 0; // 显式重置进度为0，避免状态转换异常
-                        capturedStateStartTime = 0; // 重置已占领状态开始时间
-                        ModLogger.info("据点 " + name + " 降旗完成，回到中立状态");
-                    }
-                }
-            } else {
-                // 多个队伍在场，进入争夺状态
-                state = CaptureState.CONTESTED;
-                ModLogger.info("据点 " + name + " 出现多个队伍，进入争夺状态");
-            }
+            return;
         }
+
+        pushCapturedProgressByMajority(teamGroups);
     }
     
     /**
@@ -314,44 +218,16 @@ public class CapturePoint {
             capturedStateStartTime = System.currentTimeMillis();
         }
         
-        if (playersInPoint.isEmpty()) {
+        Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
+        if (teamGroups.isEmpty()) {
             // 无玩家在场，保持已占领状态
             ModLogger.info("据点 " + name + " 无玩家在场，保持已占领状态");
         } else {
-            // 根据队伍分组
-            Map<String, List<ServerPlayer>> teamGroups = getTeamGroups(playersInPoint);
-            
-            boolean hasEnemyTeam = false;
-            for (String teamName : teamGroups.keySet()) {
-                List<ServerPlayer> teamPlayers = teamGroups.get(teamName);
-                String playerName = teamPlayers.get(0).getName().getString();
-                
-                if (!teamName.equals(captorName) && !playerName.equals(captorName)) {
-                    hasEnemyTeam = true;
-                    break;
-                }
-            }
-            
-            if (hasEnemyTeam) {
-                if (teamGroups.size() == 1) {
-                    // 只有一个敌方队伍在场，开始降旗
-                    state = CaptureState.CAPTURING_DOWN;
-                    capturedStateStartTime = 0; // 重置已占领状态开始时间
-                    ModLogger.info("据点 " + name + " 敌方队伍在场，开始降旗");
-                } else {
-                    // 多个队伍在场，进入争夺状态
-                    state = CaptureState.CONTESTED;
-                    capturedStateStartTime = 0; // 重置已占领状态开始时间
-                    ModLogger.info("据点 " + name + " 多个队伍在场，进入争夺状态");
-                }
-            } else {
-                // 只有占领者队伍在场，保持已占领状态
-                ModLogger.info("据点 " + name + " 只有占领者队伍在场，保持已占领状态");
-            }
+            pushCapturedProgressByMajority(teamGroups);
         }
         
         // 检查进度是否未满，如果未满且已占领状态持续5秒以上，将进度设置为满
-        if (progress < 100) {
+        if (state == CaptureState.CAPTURED && progress < 100) {
             long currentTime = System.currentTimeMillis();
             long duration = currentTime - capturedStateStartTime;
             if (duration >= 5000) { // 5秒
@@ -359,6 +235,109 @@ public class CapturePoint {
                 ModLogger.info("据点 " + name + " 已占领状态持续5秒，进度自动恢复到100%");
             }
         }
+    }
+
+    private void pushNeutralProgressByMajority(Map<String, List<ServerPlayer>> teamGroups) {
+        String majorityTeam = getMajorityTeam(teamGroups);
+        if (majorityTeam == null) {
+            state = CaptureState.CAPTURING_CONTESTED;
+            ModLogger.info("据点 " + name + " 双方人数相同，升旗进度暂停，队伍数量: " + teamGroups.size());
+            return;
+        }
+
+        if (captorName == null || captorName.isEmpty()) {
+            captorName = majorityTeam;
+        }
+
+        if (EspetroTeamBridge.isSameTeam(majorityTeam, captorName)) {
+            progress = Math.min(progress + PROGRESS_STEP, 100);
+            if (progress >= 100) {
+                captureForTeam(majorityTeam);
+            } else {
+                state = CaptureState.CAPTURING_FLAG;
+                ModLogger.info("据点 " + name + " 多数方 " + majorityTeam + " 推进升旗，进度: " + progress + "，人数: " + teamGroups.get(majorityTeam).size());
+            }
+            return;
+        }
+
+        progress = Math.max(progress - PROGRESS_STEP, 0);
+        if (progress <= 0) {
+            captorName = majorityTeam;
+            state = CaptureState.CAPTURING_FLAG;
+            ModLogger.info("据点 " + name + " 原升旗进度被压制清空，多数方切换为 " + majorityTeam);
+        } else {
+            state = CaptureState.CAPTURING_CONTESTED;
+            ModLogger.info("据点 " + name + " 多数方 " + majorityTeam + " 正在压制 " + captorName + " 的升旗进度，进度: " + progress);
+        }
+    }
+
+    private void pushCapturedProgressByMajority(Map<String, List<ServerPlayer>> teamGroups) {
+        if (captorName == null || captorName.isEmpty()) {
+            pushNeutralProgressByMajority(teamGroups);
+            return;
+        }
+
+        String majorityTeam = getMajorityTeam(teamGroups);
+        if (majorityTeam == null) {
+            state = CaptureState.CONTESTED;
+            capturedStateStartTime = 0;
+            ModLogger.info("据点 " + name + " 双方人数相同，降旗/恢复进度暂停，队伍数量: " + teamGroups.size());
+            return;
+        }
+
+        if (EspetroTeamBridge.isSameTeam(majorityTeam, captorName)) {
+            progress = Math.min(progress + PROGRESS_STEP, 100);
+            state = CaptureState.CAPTURED;
+            if (progress >= 100) {
+                capturedStateStartTime = 0;
+            }
+            ModLogger.info("据点 " + name + " 占领方 " + captorName + " 人数占优，恢复进度: " + progress);
+            return;
+        }
+
+        progress = Math.max(progress - PROGRESS_STEP, 0);
+        capturedStateStartTime = 0;
+        if (progress <= 0) {
+            resetToNeutral("据点 " + name + " 被多数方 " + majorityTeam + " 降旗完成，回到中立状态");
+        } else {
+            state = CaptureState.CAPTURING_DOWN;
+            ModLogger.info("据点 " + name + " 多数方 " + majorityTeam + " 正在降旗，进度: " + progress + "，占领方: " + captorName);
+        }
+    }
+
+    private String getMajorityTeam(Map<String, List<ServerPlayer>> teamGroups) {
+        String majorityTeam = null;
+        int majorityCount = 0;
+        boolean tied = false;
+
+        for (Map.Entry<String, List<ServerPlayer>> entry : teamGroups.entrySet()) {
+            int count = entry.getValue().size();
+            if (count > majorityCount) {
+                majorityTeam = entry.getKey();
+                majorityCount = count;
+                tied = false;
+            } else if (count == majorityCount) {
+                tied = true;
+            }
+        }
+
+        return majorityCount > 0 && !tied ? majorityTeam : null;
+    }
+
+    private void captureForTeam(String teamName) {
+        captorName = teamName;
+        progress = 100;
+        state = CaptureState.CAPTURED;
+        capturedStateStartTime = 0;
+        ModLogger.info("据点 " + name + " 被占领，占领者: " + captorName);
+    }
+
+    private void resetToNeutral(String reason) {
+        state = CaptureState.NEUTRAL;
+        progress = 0;
+        captorName = "";
+        capturedStateStartTime = 0;
+        ModLogger.info(reason);
     }
     
     /**
@@ -401,13 +380,9 @@ public class CapturePoint {
         Map<String, List<ServerPlayer>> teamGroups = new HashMap<>();
         
         for (ServerPlayer player : playersInPoint) {
-            String teamName;
-            // 获取玩家队伍，如果没有队伍则使用玩家名称
-            Team team = player.getTeam();
-            if (team != null && com.example.hcrpoints.config.ModConfig.enableTeams.get()) {
-                teamName = team.getName();
-            } else {
-                teamName = player.getName().getString();
+            String teamName = EspetroTeamBridge.getServerPlayerTeam(player);
+            if (teamName == null) {
+                continue;
             }
             
             // 将玩家添加到对应队伍组
@@ -429,14 +404,7 @@ public class CapturePoint {
         
         // 获取第一个队伍
         String firstTeam = teamGroups.keySet().iterator().next();
-        List<ServerPlayer> firstTeamPlayers = teamGroups.get(firstTeam);
-        
-        // 如果启用队伍机制，使用队伍名称，否则使用第一个玩家名称
-        if (com.example.hcrpoints.config.ModConfig.enableTeams.get()) {
-            return firstTeam;
-        } else {
-            return firstTeamPlayers.isEmpty() ? "" : firstTeamPlayers.get(0).getName().getString();
-        }
+        return firstTeam;
     }
     
     // Getter和Setter方法
@@ -448,7 +416,10 @@ public class CapturePoint {
     public DisplayState getDisplayState() { return displayState; }
     public void setDisplayState(DisplayState displayState) { this.displayState = displayState; }
     public String getCaptorName() { return captorName; }
-    public void setCaptorName(String captorName) { this.captorName = captorName; }
+    public void setCaptorName(String captorName) {
+        String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(captorName);
+        this.captorName = canonicalTeam != null ? canonicalTeam : captorName;
+    }
     public int getProgress() { return progress; }
     public void setProgress(int progress) { this.progress = progress; }
     

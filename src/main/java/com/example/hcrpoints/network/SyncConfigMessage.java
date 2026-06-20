@@ -24,8 +24,8 @@ public class SyncConfigMessage {
      * 构造函数
      */
     public SyncConfigMessage() {
-        this.enableTeams = ModConfig.enableTeams.get();
-        this.enableOperationMode = ModConfig.enableOperationMode.get();
+        this.enableTeams = true;
+        this.enableOperationMode = true;
         this.enableFriendlyFirePenalty = ModConfig.enableFriendlyFirePenalty.get();
         this.friendlyFirePenalty = ModConfig.friendlyFirePenalty.get();
         this.lowReinforcementThreshold = ModConfig.lowReinforcementThreshold.get();
@@ -73,9 +73,9 @@ public class SyncConfigMessage {
     public static void handle(SyncConfigMessage msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             // 在客户端更新配置
-            msg.updateConfig(msg.enableTeams, msg.enableOperationMode, msg.enableFriendlyFirePenalty, msg.friendlyFirePenalty, msg.lowReinforcementThreshold);
+            msg.updateConfig(true, true, msg.enableFriendlyFirePenalty, msg.friendlyFirePenalty, msg.lowReinforcementThreshold);
             
-            ModLogger.info("客户端配置已同步：enableTeams=" + msg.enableTeams + ", enableOperationMode=" + msg.enableOperationMode);
+            ModLogger.info("客户端配置已同步：行动模式固定启用，队伍固定使用 Espetro 阵营");
         });
         ctx.get().setPacketHandled(true);
     }

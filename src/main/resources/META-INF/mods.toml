@@ -37,5 +37,5 @@ description='''${mod_description}'''
     modId="espetro"
     mandatory=true
     versionRange="[${espetro_version},)"
-    ordering="NONE"
+    ordering="AFTER"
     side="BOTH"

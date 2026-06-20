@@ -47,8 +47,8 @@ public class ModConfig {
         
         BUILDER.push("Team Settings");
         enableTeams = BUILDER
-                .comment("启用队伍机制，避免同队伍玩家互相争夺同一据点")
-                .define("enableTeams", false);
+                .comment("兼容旧配置：HCRpoints 现在固定使用 Espetro 攻防阵营队伍")
+                .define("enableTeams", true);
         enableTeamIndicator = BUILDER
                 .comment("在玩家头顶显示敌我标识（友军绿色箭头/敌军红色倒三角），需要队伍机制同时启用")
                 .define("enableTeamIndicator", true);
@@ -92,8 +92,8 @@ public class ModConfig {
         
         BUILDER.push("Operation Settings");
         enableOperationMode = BUILDER
-                .comment("启用行动攻防机制，类似于战地1的行动模式")
-                .define("enableOperationMode", false);
+                .comment("兼容旧配置：HCRpoints 现在固定启用行动攻防机制")
+                .define("enableOperationMode", true);
         lowReinforcementThreshold = BUILDER
                 .comment("当一方兵力低于此百分比时播放背水一战背景音乐（0-100，设置为0则不播放）")
                 .defineInRange("lowReinforcementThreshold", 10.0, 0.0, 100.0);

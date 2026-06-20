@@ -124,7 +124,7 @@ key_key.hcrpoints.open_gui:key.keyboard.o
 key_key.hcrpoints.tactical_map:key.keyboard.v
 key_key.hcrpoints.map_config:key.keyboard.x
 key_key.hcrpoints.open_md_reader:key.keyboard.unknown
-soundCategory_master:1.0
+soundCategory_master:0.0
 soundCategory_music:0.0
 soundCategory_record:1.0
 soundCategory_weather:1.0

@@ -1,7 +1,8 @@
 package com.example.hcrpoints.client;
 
-import com.example.hcrpoints.client.gui.CapturePointDetailsScreen;
 import com.example.hcrpoints.hud.TacticalMapHUD;
+import com.example.hcrpoints.network.NetworkHandler;
+import com.example.hcrpoints.network.RequestCapturePointOverviewMessage;
 import com.example.hcrpoints.util.ModLogger;
 import com.example.hcrpoints.client.gui.MDRenderScreen;
 import net.minecraft.client.KeyMapping;
@@ -26,7 +27,7 @@ public class ClientEventHandler {
     
     public static final KeyMapping OPEN_GUI_KEY = new KeyMapping(
         KEY_OPEN_GUI,
-        GLFW.GLFW_KEY_O,
+        GLFW.GLFW_KEY_J,
         KEY_CATEGORY
     );
     
@@ -75,7 +76,7 @@ public class ClientEventHandler {
             // 处理打开GUI按键
             boolean isGuiKeyPressed = OPEN_GUI_KEY.isDown();
             if (isGuiKeyPressed && !wasGuiKeyPressed && mc.player != null) {
-                mc.setScreen(new CapturePointDetailsScreen());
+                NetworkHandler.INSTANCE.sendToServer(new RequestCapturePointOverviewMessage());
             }
             wasGuiKeyPressed = isGuiKeyPressed;
             

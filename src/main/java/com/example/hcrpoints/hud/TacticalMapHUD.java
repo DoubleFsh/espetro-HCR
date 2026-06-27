@@ -1,5 +1,6 @@
 package com.example.hcrpoints.hud;
 
+import com.example.hcrpoints.HCRPointsMod;
 import com.example.hcrpoints.capturepoint.CapturePoint;
 import com.example.hcrpoints.capturepoint.CapturePointManager;
 import com.example.hcrpoints.capturepoint.DisplayState;
@@ -17,6 +18,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.saveddata.maps.MapDecoration;
 import net.minecraftforge.client.gui.overlay.ForgeGui;
@@ -38,6 +40,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -173,7 +176,7 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     public void increaseRenderRange() {
         TacticalMapJsonConfig config = TacticalMapJsonConfig.getInstance();
-        TacticalMapJsonConfig.TacticalMapBounds bounds = config.getBounds();
+        TacticalMapJsonConfig.TacticalMapBounds bounds = getCurrentBounds(config);
         ensureVisibleSpan(config, bounds);
         visibleWorldSpan = Math.min(bounds.size(), visibleWorldSpan * ZOOM_FACTOR);
         preserveCustomViewportCenter(bounds);
@@ -181,7 +184,7 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     public void decreaseRenderRange() {
         TacticalMapJsonConfig config = TacticalMapJsonConfig.getInstance();
-        TacticalMapJsonConfig.TacticalMapBounds bounds = config.getBounds();
+        TacticalMapJsonConfig.TacticalMapBounds bounds = getCurrentBounds(config);
         ensureVisibleSpan(config, bounds);
         visibleWorldSpan = Math.max(config.getMinimumRange(bounds), visibleWorldSpan / ZOOM_FACTOR);
         preserveCustomViewportCenter(bounds);
@@ -526,7 +529,7 @@ public class TacticalMapHUD implements IGuiOverlay {
 
         TacticalMapJsonConfig config = TacticalMapJsonConfig.getInstance();
         ensureBackgroundTexture(config);
-        TacticalMapJsonConfig.TacticalMapBounds bounds = config.getBounds();
+        TacticalMapJsonConfig.TacticalMapBounds bounds = getEffectiveBounds(config, config.getBounds(), player);
         ensureVisibleSpan(config, bounds);
 
         MapViewport content = createViewport(config, bounds, player, mapLeft, mapTop, mapWidth, mapHeight);
@@ -548,7 +551,7 @@ public class TacticalMapHUD implements IGuiOverlay {
 
         renderBasesOnMap(guiGraphics, content, player, config.showLabels, localTeam);
 
-        renderCapturePointsOnMap(guiGraphics, content, player, config.showLabels, localTeam);
+        renderCapturePointsOnMap(guiGraphics, content, player, config.showLabels);
 
         // 渲染己方兵站
         renderBastionsOnMap(guiGraphics, content, player, config.showLabels, localTeam);
@@ -576,7 +579,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         int size = viewport.markerSize(BASE_MARKER_WORLD_SIZE, 10, 26);
 
         for (SyncBastionsMessage.BaseInfo base : visibleBases) {
-            if (!isFriendlyTeam(localTeam, base.getTeam())) {
+            if (!isVisibleTeamMarker(localTeam, base.getTeam())) {
                 continue;
             }
 
@@ -613,7 +616,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         int size = viewport.markerSize(BASTION_MARKER_WORLD_SIZE, 7, 18);
 
         for (SyncBastionsMessage.BastionInfo bastion : visibleBastions) {
-            if (!isFriendlyTeam(localTeam, bastion.getTeam())) {
+            if (!isVisibleTeamMarker(localTeam, bastion.getTeam())) {
                 continue;
             }
 
@@ -704,7 +707,7 @@ public class TacticalMapHUD implements IGuiOverlay {
      * @param player 本地玩家
      */
     private void renderCapturePointsOnMap(GuiGraphics guiGraphics, MapViewport viewport, LocalPlayer player,
-                                          boolean showLabels, String localTeam) {
+                                          boolean showLabels) {
         double playerY = player.getY();
         int markerSize = viewport.markerSize(CAPTURE_POINT_MARKER_WORLD_SIZE, 5, 16);
         int labelOffset = markerSize / 2 + 3;
@@ -712,10 +715,6 @@ public class TacticalMapHUD implements IGuiOverlay {
         // 遍历所有据点
         Map<CapturePoint, int[]> pointPositions = new HashMap<>();
         for (CapturePoint point : allPoints) {
-            if (!isFriendlyCapturePoint(point, localTeam)) {
-                continue;
-            }
-
             // 计算据点中心坐标
             double pointCenterX = (point.getPos1().getX() + point.getPos2().getX()) / 2.0;
             double pointCenterZ = (point.getPos1().getZ() + point.getPos2().getZ()) / 2.0;
@@ -775,16 +774,13 @@ public class TacticalMapHUD implements IGuiOverlay {
             renderPointBoundary(guiGraphics, point, viewport);
         }
 
-        renderBatchRoutes(guiGraphics, pointPositions, viewport, localTeam);
+        renderBatchRoutes(guiGraphics, pointPositions, viewport);
     }
 
     private void renderBatchRoutes(GuiGraphics guiGraphics, Map<CapturePoint, int[]> pointPositions,
-                                   MapViewport viewport, String localTeam) {
+                                   MapViewport viewport) {
         Map<Integer, List<CapturePoint>> pointsByBatch = new TreeMap<>();
         for (CapturePoint point : allPoints) {
-            if (!isFriendlyCapturePoint(point, localTeam)) {
-                continue;
-            }
             pointsByBatch.computeIfAbsent(point.getBatch(), key -> new ArrayList<>()).add(point);
         }
 
@@ -883,7 +879,6 @@ public class TacticalMapHUD implements IGuiOverlay {
                                        int mapHeight) {
         int availableHeight = Math.max(1, mapHeight - MAP_TITLE_HEIGHT);
         double displayAspectRatio = getMapDisplayAspectRatio(bounds);
-        double worldAspectRatio = bounds.aspectRatio();
         int width = Math.max(1, mapWidth);
         int height = Math.max(1, (int) Math.round(width / displayAspectRatio));
         if (height > availableHeight) {
@@ -893,26 +888,177 @@ public class TacticalMapHUD implements IGuiOverlay {
         int left = mapLeft + (mapWidth - width) / 2;
         int top = mapTop + MAP_TITLE_HEIGHT + (availableHeight - height) / 2;
 
-        double centerX = (draggingMap || customMapCenter) ? draggedCenterX : player.getX();
-        double centerZ = (draggingMap || customMapCenter) ? draggedCenterZ : player.getZ();
         ensureVisibleSpan(config, bounds);
+        double[] span = getViewportSpan(bounds);
+        double centerX;
+        double centerZ;
+        if (draggingMap || customMapCenter) {
+            centerX = draggedCenterX;
+            centerZ = draggedCenterZ;
+        } else {
+            double[] autoCenter = chooseAutoViewportCenter(player, bounds, span[0], span[1]);
+            centerX = autoCenter[0];
+            centerZ = autoCenter[1];
+        }
         double[] clamped = clampViewportCenter(centerX, centerZ, visibleWorldSpan, bounds);
         if (draggingMap || customMapCenter) {
             draggedCenterX = clamped[0];
             draggedCenterZ = clamped[1];
         }
 
-        double spanX;
-        double spanZ;
-        if (worldAspectRatio >= 1.0D) {
-            spanX = visibleWorldSpan;
-            spanZ = visibleWorldSpan / worldAspectRatio;
-        } else {
-            spanZ = visibleWorldSpan;
-            spanX = visibleWorldSpan * worldAspectRatio;
+        return new MapViewport(left, top, width, height, clamped[0], clamped[1], span[0], span[1], bounds);
+    }
+
+    private TacticalMapJsonConfig.TacticalMapBounds getEffectiveBounds(TacticalMapJsonConfig config,
+                                                                       TacticalMapJsonConfig.TacticalMapBounds configuredBounds,
+                                                                       LocalPlayer player) {
+        List<MarkerCenter> markers = collectSyncedMarkerCenters(player, true);
+        if (markers.isEmpty()) {
+            return configuredBounds;
         }
 
-        return new MapViewport(left, top, width, height, clamped[0], clamped[1], spanX, spanZ, bounds);
+        for (MarkerCenter marker : markers) {
+            if (configuredBounds.contains(marker.x, marker.z)) {
+                return configuredBounds;
+            }
+        }
+
+        double padding = Math.max(64.0D, config.getMinimumRange(configuredBounds));
+        TacticalMapJsonConfig.TacticalMapBounds expandedBounds = configuredBounds;
+        for (MarkerCenter marker : markers) {
+            expandedBounds = expandedBounds.expandToInclude(marker.x, marker.z, padding);
+        }
+        if (Double.isFinite(player.getX()) && Double.isFinite(player.getZ())) {
+            expandedBounds = expandedBounds.expandToInclude(player.getX(), player.getZ(), padding);
+        }
+        return expandedBounds;
+    }
+
+    private double[] chooseAutoViewportCenter(LocalPlayer player,
+                                             TacticalMapJsonConfig.TacticalMapBounds bounds,
+                                             double spanX,
+                                             double spanZ) {
+        double[] playerCenter = clampViewportCenter(player.getX(), player.getZ(), visibleWorldSpan, bounds);
+        List<MarkerCenter> markers = collectSyncedMarkerCenters(player, true);
+        if (markers.isEmpty() || containsAnyMarker(playerCenter[0], playerCenter[1], spanX, spanZ, bounds, markers)) {
+            return playerCenter;
+        }
+
+        MarkerCenter nearest = findNearestMarker(player.getX(), player.getZ(), bounds, markers);
+        if (nearest != null) {
+            return new double[] {nearest.x, nearest.z};
+        }
+        return playerCenter;
+    }
+
+    private boolean containsAnyMarker(double centerX,
+                                      double centerZ,
+                                      double spanX,
+                                      double spanZ,
+                                      TacticalMapJsonConfig.TacticalMapBounds bounds,
+                                      List<MarkerCenter> markers) {
+        double minX = centerX - spanX / 2.0D;
+        double maxX = centerX + spanX / 2.0D;
+        double minZ = centerZ - spanZ / 2.0D;
+        double maxZ = centerZ + spanZ / 2.0D;
+        for (MarkerCenter marker : markers) {
+            if (bounds.contains(marker.x, marker.z)
+                    && marker.x >= minX && marker.x <= maxX
+                    && marker.z >= minZ && marker.z <= maxZ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private MarkerCenter findNearestMarker(double x,
+                                           double z,
+                                           TacticalMapJsonConfig.TacticalMapBounds bounds,
+                                           List<MarkerCenter> markers) {
+        MarkerCenter nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+        for (MarkerCenter marker : markers) {
+            if (!bounds.contains(marker.x, marker.z)) {
+                continue;
+            }
+            double dx = marker.x - x;
+            double dz = marker.z - z;
+            double distance = dx * dx + dz * dz;
+            if (distance < nearestDistance) {
+                nearest = marker;
+                nearestDistance = distance;
+            }
+        }
+        return nearest;
+    }
+
+    private List<MarkerCenter> collectSyncedMarkerCenters(LocalPlayer player, boolean includePlayers) {
+        List<MarkerCenter> markers = new ArrayList<>();
+        String localTeam = EspetroTeamBridge.getPlayerTeam(player);
+        for (SyncBastionsMessage.BaseInfo base : visibleBases) {
+            if (!isVisibleTeamMarker(localTeam, base.getTeam())) {
+                continue;
+            }
+            BlockPos pos = base.getPos();
+            addMarkerCenter(markers, pos.getX(), pos.getZ());
+        }
+
+        for (SyncBastionsMessage.BastionInfo bastion : visibleBastions) {
+            if (!isVisibleTeamMarker(localTeam, bastion.getTeam())) {
+                continue;
+            }
+            BlockPos pos = bastion.getPos();
+            addMarkerCenter(markers, pos.getX(), pos.getZ());
+        }
+
+        for (CapturePoint point : allPoints) {
+            addMarkerCenter(markers,
+                (point.getPos1().getX() + point.getPos2().getX()) / 2.0D,
+                (point.getPos1().getZ() + point.getPos2().getZ()) / 2.0D);
+        }
+
+        if (!includePlayers) {
+            return markers;
+        }
+
+        for (Map.Entry<UUID, com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition> entry
+                : syncedPlayerPositions.entrySet()) {
+            if (entry.getKey().equals(player.getUUID())) {
+                continue;
+            }
+            com.example.hcrpoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = entry.getValue();
+            if (!EspetroTeamBridge.isSameTeam(localTeam, pos.getTeamName())) {
+                continue;
+            }
+            addMarkerCenter(markers, pos.getX(), pos.getZ());
+        }
+        return markers;
+    }
+
+    private boolean isVisibleTeamMarker(String localTeam, String markerTeam) {
+        String canonicalMarkerTeam = EspetroTeamBridge.canonicalizeTeamName(markerTeam);
+        if (canonicalMarkerTeam == null) {
+            return true;
+        }
+        return EspetroTeamBridge.isSameTeam(localTeam, canonicalMarkerTeam);
+    }
+
+    private void addMarkerCenter(List<MarkerCenter> markers, double x, double z) {
+        if (Double.isFinite(x) && Double.isFinite(z)) {
+            markers.add(new MarkerCenter(x, z));
+        }
+    }
+
+    private double[] getViewportSpan(TacticalMapJsonConfig.TacticalMapBounds bounds) {
+        return getViewportSpan(bounds, visibleWorldSpan);
+    }
+
+    private double[] getViewportSpan(TacticalMapJsonConfig.TacticalMapBounds bounds, double span) {
+        double aspectRatio = bounds.aspectRatio();
+        if (bounds.width() >= bounds.height()) {
+            return new double[] {span, span / aspectRatio};
+        }
+        return new double[] {span * aspectRatio, span};
     }
 
     private double getMapDisplayAspectRatio(TacticalMapJsonConfig.TacticalMapBounds bounds) {
@@ -993,31 +1139,11 @@ public class TacticalMapHUD implements IGuiOverlay {
             && mouseY <= lastRecenterButtonTop + lastRecenterButtonHeight;
     }
 
-    private boolean isFriendlyTeam(String localTeam, String markerTeam) {
-        return localTeam != null && EspetroTeamBridge.isSameTeam(localTeam, markerTeam);
-    }
-
-    private boolean isFriendlyCapturePoint(CapturePoint point, String localTeam) {
-        if (point == null || localTeam == null) {
-            return false;
-        }
-        String captorName = point.getCaptorName();
-        String captorTeam = EspetroTeamBridge.canonicalizeTeamName(captorName);
-        return captorTeam == null || EspetroTeamBridge.isSameTeam(localTeam, captorTeam);
-    }
-
     private double[] clampViewportCenter(double centerX, double centerZ, double span,
                                          TacticalMapJsonConfig.TacticalMapBounds bounds) {
-        double aspectRatio = bounds.aspectRatio();
-        double spanX;
-        double spanZ;
-        if (bounds.width() >= bounds.height()) {
-            spanX = span;
-            spanZ = span / aspectRatio;
-        } else {
-            spanZ = span;
-            spanX = span * aspectRatio;
-        }
+        double[] viewportSpan = getViewportSpan(bounds, span);
+        double spanX = viewportSpan[0];
+        double spanZ = viewportSpan[1];
 
         double halfX = spanX / 2.0D;
         double halfZ = spanZ / 2.0D;
@@ -1093,14 +1219,12 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
 
         try {
-            Path path = resolveBackgroundPath(imagePath);
-            long modified = getLastModified(path);
-            String key = path.toAbsolutePath().normalize() + ":" + modified;
-            if (key.equals(backgroundTextureKey) && backgroundTextureLocation != null && backgroundTexture != null) {
+            BackgroundImageSource source = openBackgroundImage(imagePath);
+            if (source.key.equals(backgroundTextureKey) && backgroundTextureLocation != null && backgroundTexture != null) {
                 return;
             }
 
-            try (InputStream input = Files.newInputStream(path)) {
+            try (InputStream input = source.open()) {
                 NativeImage image = NativeImage.read(input);
                 releaseBackgroundTexture();
                 backgroundTextureWidth = image.getWidth();
@@ -1108,12 +1232,50 @@ public class TacticalMapHUD implements IGuiOverlay {
                 backgroundTexture = new DynamicTexture(image);
                 backgroundTextureLocation = Minecraft.getInstance().getTextureManager()
                     .register("hcr_tactical_map_background", backgroundTexture);
-                backgroundTextureKey = key;
+                backgroundTextureKey = source.key;
             }
         } catch (IOException | InvalidPathException e) {
             releaseBackgroundTexture();
             ModLogger.warn("加载战术地图背景图失败: " + imagePath + " (" + e.getMessage() + ")");
         }
+    }
+
+    private BackgroundImageSource openBackgroundImage(String imagePath) throws IOException {
+        ResourceLocation resourceLocation = parseBackgroundResourceLocation(imagePath);
+        if (resourceLocation != null) {
+            Optional<Resource> resource = Minecraft.getInstance().getResourceManager().getResource(resourceLocation);
+            if (resource.isPresent()) {
+                return new BackgroundImageSource("resource:" + resourceLocation, () -> resource.get().open());
+            }
+        }
+
+        Path path = resolveBackgroundPath(imagePath);
+        long modified = getLastModified(path);
+        return new BackgroundImageSource(
+            "file:" + path.toAbsolutePath().normalize() + ":" + modified,
+            () -> Files.newInputStream(path)
+        );
+    }
+
+    private ResourceLocation parseBackgroundResourceLocation(String imagePath) {
+        String normalized = imagePath.replace('\\', '/').trim();
+        if (normalized.startsWith("assets/")) {
+            String[] parts = normalized.split("/", 3);
+            if (parts.length == 3) {
+                return ResourceLocation.tryParse(parts[1] + ":" + parts[2]);
+            }
+            return null;
+        }
+
+        if (normalized.contains(":")) {
+            return ResourceLocation.tryParse(normalized);
+        }
+
+        if (normalized.startsWith("textures/")) {
+            return ResourceLocation.fromNamespaceAndPath(HCRPointsMod.MOD_ID, normalized);
+        }
+
+        return null;
     }
 
     private Path resolveBackgroundPath(String imagePath) {
@@ -1261,7 +1423,7 @@ public class TacticalMapHUD implements IGuiOverlay {
     }
 
     private void resetVisibleSpan(TacticalMapJsonConfig config) {
-        TacticalMapJsonConfig.TacticalMapBounds bounds = config.getBounds();
+        TacticalMapJsonConfig.TacticalMapBounds bounds = getCurrentBounds(config);
         visibleWorldSpan = config.getInitialRange(bounds);
     }
 
@@ -1286,9 +1448,28 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     private String getRangeText() {
         TacticalMapJsonConfig config = TacticalMapJsonConfig.getInstance();
-        TacticalMapJsonConfig.TacticalMapBounds bounds = config.getBounds();
+        TacticalMapJsonConfig.TacticalMapBounds bounds = getCurrentBounds(config);
         ensureVisibleSpan(config, bounds);
         return "范围:" + Math.round(visibleWorldSpan);
+    }
+
+    private TacticalMapJsonConfig.TacticalMapBounds getCurrentBounds(TacticalMapJsonConfig config) {
+        TacticalMapJsonConfig.TacticalMapBounds configuredBounds = config.getBounds();
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null) {
+            return configuredBounds;
+        }
+        return getEffectiveBounds(config, configuredBounds, player);
+    }
+
+    private static final class MarkerCenter {
+        private final double x;
+        private final double z;
+
+        private MarkerCenter(double x, double z) {
+            this.x = x;
+            this.z = z;
+        }
     }
 
     private static final class MapViewport {
@@ -1377,6 +1558,25 @@ public class TacticalMapHUD implements IGuiOverlay {
 
         private int bottom() {
             return top + height;
+        }
+    }
+
+    @FunctionalInterface
+    private interface BackgroundInputOpener {
+        InputStream open() throws IOException;
+    }
+
+    private static final class BackgroundImageSource {
+        private final String key;
+        private final BackgroundInputOpener opener;
+
+        private BackgroundImageSource(String key, BackgroundInputOpener opener) {
+            this.key = key;
+            this.opener = opener;
+        }
+
+        private InputStream open() throws IOException {
+            return opener.open();
         }
     }
     

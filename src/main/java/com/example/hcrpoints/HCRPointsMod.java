@@ -5,6 +5,7 @@ import com.example.hcrpoints.command.HCRCommand;
 import com.example.hcrpoints.config.ModConfig;
 import com.example.hcrpoints.config.TacticalMapConfig;
 import com.example.hcrpoints.config.TacticalMapDataReloadListener;
+import com.example.hcrpoints.config.TeamfightJsonConfig;
 import com.example.hcrpoints.network.NetworkHandler;
 import com.example.hcrpoints.network.SyncTacticalMapConfigMessage;
 import net.minecraftforge.api.distmarker.Dist;
@@ -15,6 +16,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.AddReloadListenerEvent;
 import net.minecraftforge.event.OnDatapackSyncEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
+import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModLoadingContext;
@@ -134,6 +136,14 @@ public class HCRPointsMod {
     public void onRegisterCommands(RegisterCommandsEvent event) {
         // 注册命令
         HCRCommand.register(event.getDispatcher());
+    }
+
+    @SubscribeEvent
+    public void onServerStarted(ServerStartedEvent event) {
+        TeamfightJsonConfig.LoadResult result = TeamfightJsonConfig.loadConfig();
+        if (!result.isSuccess()) {
+            LOGGER.warn("行动模式JSON配置未加载: {}", result.getMessage());
+        }
     }
 
     @SubscribeEvent

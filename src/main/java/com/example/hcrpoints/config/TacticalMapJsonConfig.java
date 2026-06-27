@@ -183,5 +183,19 @@ public final class TacticalMapJsonConfig {
         public double centerZ() {
             return (minZ + maxZ) / 2.0D;
         }
+
+        public boolean contains(double x, double z) {
+            return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+        }
+
+        public TacticalMapBounds expandToInclude(double x, double z, double padding) {
+            double safePadding = Math.max(0.0D, padding);
+            return new TacticalMapBounds(
+                Math.min(minX, x - safePadding),
+                Math.min(minZ, z - safePadding),
+                Math.max(maxX, x + safePadding),
+                Math.max(maxZ, z + safePadding)
+            );
+        }
     }
 }

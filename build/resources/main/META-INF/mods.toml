@@ -5,7 +5,7 @@ issueTrackerURL="https://github.com/Hydroceder/hcrpoints/issues"
 
 [[mods]]
 modId="hcrpoints"
-version="2.2.0-snapshot"
+version="1.0.0-final"
 displayName="HCR AAD"
 displayURL=""
 credits="Hydroceder"
@@ -36,6 +36,6 @@ description='''AI-Generated Mod: A mod that enables attack and defense in Minecr
 [[dependencies.hcrpoints]]
     modId="espetro"
     mandatory=true
-    versionRange="[1.9.0-snapshot,)"
+    versionRange="[1.0.0-final,)"
     ordering="AFTER"
     side="BOTH"

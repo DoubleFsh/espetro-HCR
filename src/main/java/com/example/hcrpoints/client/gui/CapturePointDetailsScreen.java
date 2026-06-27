@@ -3,12 +3,10 @@ package com.example.hcrpoints.client.gui;
 import com.example.hcrpoints.capturepoint.CapturePoint;
 import com.example.hcrpoints.capturepoint.CapturePointManager;
 import com.example.hcrpoints.capturepoint.DisplayState;
-import com.example.hcrpoints.hud.TacticalMapHUD;
 import com.example.hcrpoints.network.NetworkHandler;
 import com.example.hcrpoints.network.RequestCapturePointOverviewMessage;
 import com.example.hcrpoints.util.EspetroTeamBridge;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 import se.mickelus.mutil.gui.GuiElement;
@@ -37,10 +35,6 @@ public class CapturePointDetailsScreen extends MutilScreen {
     private int lastDataHash;
     private int lastWidth;
     private int lastHeight;
-    private int embeddedMapX;
-    private int embeddedMapY;
-    private int embeddedMapW;
-    private int embeddedMapH;
 
     public CapturePointDetailsScreen() {
         super(Component.literal("据点占领情况"));
@@ -77,7 +71,6 @@ public class CapturePointDetailsScreen extends MutilScreen {
             overviewPoints.clear();
             overviewPoints.addAll(points);
         }
-        TacticalMapHUD.getInstance().syncVisibleCapturePointsFromServer(serializedPoints);
     }
 
     @Override
@@ -116,83 +109,12 @@ public class CapturePointDetailsScreen extends MutilScreen {
         int contentW = pageW - 36;
         int contentH = pageY + pageH - contentY - 18;
 
-        int tableX = contentX;
-        int tableY = contentY;
-        int tableW;
-        int tableH;
-        int gap = 14;
-        if (contentW >= 860 && contentH >= 260) {
-            embeddedMapW = Math.max(320, contentW * 42 / 100);
-            int tableMinW = 330;
-            if (contentW - embeddedMapW - gap < tableMinW) {
-                embeddedMapW = Math.max(280, contentW - tableMinW - gap);
-            }
-            embeddedMapX = contentX + contentW - embeddedMapW;
-            embeddedMapY = contentY;
-            embeddedMapH = contentH;
-
-            tableW = Math.max(220, embeddedMapX - tableX - gap);
-            tableH = contentH;
-        } else {
-            int tableMinH = TABLE_HEADER_H + ROW_H + 18;
-            embeddedMapX = contentX;
-            embeddedMapY = contentY;
-            embeddedMapW = contentW;
-            embeddedMapH = Math.min(Math.max(120, contentH * 40 / 100), 280);
-            int availableTableH = contentH - embeddedMapH - gap;
-            if (availableTableH < tableMinH) {
-                embeddedMapH = Math.max(70, contentH - tableMinH - gap);
-                availableTableH = contentH - embeddedMapH - gap;
-            }
-            if (availableTableH < tableMinH) {
-                embeddedMapH = Math.max(60, contentH / 3);
-                availableTableH = Math.max(ROW_H, contentH - embeddedMapH - gap);
-            }
-
-            tableY = embeddedMapY + embeddedMapH + gap;
-            tableW = contentW;
-            tableH = availableTableH;
-        }
-        buildTable(root, points, tableX, tableY, tableW, tableH);
-    }
-
-    @Override
-    protected void renderAfterMutil(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        if (embeddedMapW > 0 && embeddedMapH > 0) {
-            TacticalMapHUD.getInstance().renderEmbeddedMap(
-                graphics, embeddedMapX, embeddedMapY, embeddedMapW, embeddedMapH, partialTick);
-        }
-    }
-
-    @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
-        if (isInsideEmbeddedMap(mouseX, mouseY)) {
-            TacticalMapHUD.getInstance().zoomFromMouseWheel(delta);
-            return true;
-        }
-        return super.mouseScrolled(mouseX, mouseY, delta);
-    }
-
-    private boolean isInsideEmbeddedMap(double mouseX, double mouseY) {
-        return embeddedMapW > 0
-            && embeddedMapH > 0
-            && mouseX >= embeddedMapX
-            && mouseX <= embeddedMapX + embeddedMapW
-            && mouseY >= embeddedMapY
-            && mouseY <= embeddedMapY + embeddedMapH;
+        buildTable(root, points, contentX, contentY, contentW, contentH);
     }
 
     private void buildHeader(GuiElement root, int pageX, int pageY, int pageW) {
         root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 13, "据点占领情况", HcrMutilWidgets.TEXT));
         root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 29, "仅显示据点占领状态", HcrMutilWidgets.MUTED));
-
-        HcrMutilWidgets.ActionButton recenter = HcrMutilWidgets.button(
-                pageX + pageW - 184, pageY + 14, 50, 18, "归中",
-                () -> TacticalMapHUD.getInstance().recenterOnPlayer())
-            .setColors(0x00000000, 0x40323B4A, 0x503A3020)
-            .setBorderColor(HcrMutilWidgets.BORDER)
-            .setTextColor(HcrMutilWidgets.GOLD);
-        root.addChild(recenter);
 
         HcrMutilWidgets.ActionButton refresh = HcrMutilWidgets.button(
                 pageX + pageW - 126, pageY + 14, 50, 18, "刷新", this::requestOverview)

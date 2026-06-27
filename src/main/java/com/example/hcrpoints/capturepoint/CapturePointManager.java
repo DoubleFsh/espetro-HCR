@@ -1703,6 +1703,11 @@ public class CapturePointManager {
         }
 
         try {
+            String visibleTeam = getVisibleEspetroBastionTeam(player);
+            if (visibleTeam == null || visibleTeam.isEmpty()) {
+                return bases;
+            }
+
             Class<?> spawnPointConfigClass = Class.forName(ESPETRO_SPAWN_POINT_CONFIG_CLASS);
             Method getAllSpawnPointsMethod = spawnPointConfigClass.getMethod("getAllSpawnPoints");
             Object result = getAllSpawnPointsMethod.invoke(null);
@@ -1713,6 +1718,9 @@ public class CapturePointManager {
             for (Map.Entry<?, ?> entry : spawnPoints.entrySet()) {
                 String team = EspetroTeamBridge.canonicalizeTeamName(String.valueOf(entry.getKey()));
                 if (team == null) {
+                    continue;
+                }
+                if (!visibleTeam.equals(team)) {
                     continue;
                 }
 
@@ -1830,6 +1838,9 @@ public class CapturePointManager {
             
             // 向新登录的玩家同步地图玩家显示配置
             com.example.hcrpoints.network.SyncMapPlayerDisplayMessage.sendToPlayer(player);
+
+            // 向新登录的玩家同步数据包驱动的战术地图配置。
+            com.example.hcrpoints.network.SyncTacticalMapConfigMessage.sendToPlayer(player);
             
             // 向新登录的玩家同步据点数据
             syncToClient(player);

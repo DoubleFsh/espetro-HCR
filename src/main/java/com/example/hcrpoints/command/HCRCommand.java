@@ -1,6 +1,7 @@
 package com.example.hcrpoints.command;
 
 import com.example.hcrpoints.capturepoint.CapturePointManager;
+import com.example.hcrpoints.config.TeamfightJsonConfig;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -75,6 +76,7 @@ public class HCRCommand {
                     .then(Commands.literal("clear")
                         .executes(HCRCommand::executeTeamfightClear))
                     .then(Commands.literal("start")
+                        .executes(HCRCommand::executeTeamfightStartFromConfig)
                         .then(Commands.argument("totalBatches", IntegerArgumentType.integer(1))
                             .then(Commands.argument("endBehavior", StringArgumentType.word())
                                 .suggests(HCRCommand::suggestEndBehavior)
@@ -89,7 +91,11 @@ public class HCRCommand {
                             .executes(HCRCommand::executeTeamfightSave)))
                     .then(Commands.literal("load")
                         .then(Commands.argument("preset", IntegerArgumentType.integer(1))
-                            .executes(HCRCommand::executeTeamfightLoad))))
+                            .executes(HCRCommand::executeTeamfightLoad)))
+                    .then(Commands.literal("loadconfig")
+                        .executes(HCRCommand::executeTeamfightLoadConfig))
+                    .then(Commands.literal("saveconfig")
+                        .executes(HCRCommand::executeTeamfightSaveConfig)))
                 .executes(HCRCommand::executeHelp)
         );
     }
@@ -117,6 +123,7 @@ public class HCRCommand {
         source.sendSuccess(() -> Component.literal("/hcrpi teamfight stop - 停止行动"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi teamfight nextbatch - 推进到下一批次"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi teamfight save/load <序号> - 保存或加载行动预设"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight loadconfig/saveconfig - 读取或导出 config/hcrpoints/teamfight.json"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi send <玩家> <边框颜色> <内容> - 向指定玩家发送消息弹窗"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi playsound <音效名> - 直接播放指定音效，例如：/hcrpi playsound lastStandBGM"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi mapctrl <true|false> - 控制战术地图玩家位置显示"), false);
@@ -364,6 +371,41 @@ public class HCRCommand {
         
         return 1;
     }
+
+    /**
+     * 使用已加载的JSON配置启动行动。
+     */
+    private static int executeTeamfightStartFromConfig(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+
+        if (!hasPermission(source, 2)) {
+            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
+            return 0;
+        }
+
+        CapturePointManager manager = CapturePointManager.getInstance();
+        manager.bindEspetroTeams();
+
+        int totalBatches = Math.max(manager.getTotalBatches(), manager.calculateTotalBatches());
+        if (totalBatches <= 0) {
+            totalBatches = manager.calculateTotalBatches();
+        }
+        if (totalBatches <= 0 || manager.getPlannedPointsInfo().isEmpty()) {
+            source.sendFailure(Component.literal("启动失败：未加载行动模式JSON配置或没有计划据点，请先编辑 config/hcrpoints/teamfight.json 并执行 /hcrpi teamfight loadconfig"));
+            return 0;
+        }
+
+        String endBehavior = manager.getEndBehavior();
+        if (endBehavior == null || (!endBehavior.equalsIgnoreCase("terminate") && !endBehavior.equalsIgnoreCase("loop"))) {
+            endBehavior = "terminate";
+        }
+
+        manager.startOperationMode(totalBatches, endBehavior);
+        String finalEndBehavior = endBehavior;
+        int finalTotalBatches = totalBatches;
+        source.sendSuccess(() -> Component.literal("已按JSON配置启动行动！当前批次：1, 总批数：" + finalTotalBatches + ", 结束行为：" + finalEndBehavior), true);
+        return 1;
+    }
     
     /**
      * 为teamfight start命令的endBehavior参数添加自动补全
@@ -491,6 +533,54 @@ public class HCRCommand {
             source.sendFailure(Component.literal("加载预设失败！预设文件可能不存在或格式错误"));
         }
         
+        return 1;
+    }
+
+    /**
+     * 从固定JSON配置文件加载行动设置。
+     */
+    private static int executeTeamfightLoadConfig(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+
+        if (!hasPermission(source, 2)) {
+            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
+            return 0;
+        }
+
+        TeamfightJsonConfig.LoadResult result = TeamfightJsonConfig.loadConfig();
+        if (!result.isSuccess()) {
+            source.sendFailure(Component.literal("加载行动模式JSON配置失败：" + result.getMessage()));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal("行动模式JSON配置已加载：" + result.getPath()
+                + "，计划据点 " + result.getPlannedPointCount()
+                + " 个，总批次 " + result.getTotalBatches()
+                + "，结束行为 " + result.getEndBehavior()), true);
+        return 1;
+    }
+
+    /**
+     * 将当前行动设置导出到固定JSON配置文件。
+     */
+    private static int executeTeamfightSaveConfig(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+
+        if (!hasPermission(source, 2)) {
+            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
+            return 0;
+        }
+
+        TeamfightJsonConfig.LoadResult result = TeamfightJsonConfig.saveCurrentConfig();
+        if (!result.isSuccess()) {
+            source.sendFailure(Component.literal("保存行动模式JSON配置失败：" + result.getMessage()));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal("行动模式JSON配置已保存：" + result.getPath()
+                + "，计划据点 " + result.getPlannedPointCount()
+                + " 个，总批次 " + result.getTotalBatches()
+                + "，结束行为 " + result.getEndBehavior()), true);
         return 1;
     }
     
@@ -664,16 +754,27 @@ public class HCRCommand {
      */
     private static int executeReload(CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
+
+        if (!hasPermission(source, 2)) {
+            source.sendFailure(Component.literal("权限不足，需2级管理员权限"));
+            return 0;
+        }
         
         // 重新加载地图玩家显示配置
         com.example.hcrpoints.config.MapPlayerDisplayConfig.getInstance().loadConfig();
+        TeamfightJsonConfig.LoadResult teamfightConfigResult = TeamfightJsonConfig.loadConfig();
         
         // 向所有玩家广播配置更新
         com.example.hcrpoints.network.SyncMapPlayerDisplayMessage.broadcastToAll();
         
+        String teamfightConfigMessage = teamfightConfigResult.isSuccess()
+            ? "；行动模式JSON已加载，计划据点 " + teamfightConfigResult.getPlannedPointCount() + " 个"
+            : "；行动模式JSON未加载：" + teamfightConfigResult.getMessage();
+        
         // 发送成功消息
         source.sendSuccess(() -> Component.literal("已重新加载配置文件，当前地图玩家位置显示："
             + com.example.hcrpoints.config.MapPlayerDisplayConfig.getInstance().isShowPlayerLocations()
+            + teamfightConfigMessage
             + "；战术地图JSON请使用 /reload 热加载数据包"), true);
         
         return 1;

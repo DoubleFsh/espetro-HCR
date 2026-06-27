@@ -18,6 +18,7 @@ public final class EspetroTeamBridge {
     public static final String DEFEND_SCOREBOARD_TEAM = "espetro_defend";
 
     private static final String ESPETRO_CLASS_NAME = "org.espetro.Espetro";
+    private static final String ESPETRO_CLIENT_GAME_STATE_CLASS_NAME = "org.espetro.client.gui.ClientGameState";
 
     private EspetroTeamBridge() {
     }
@@ -32,6 +33,11 @@ public final class EspetroTeamBridge {
             if (espetroTeam != null) {
                 return espetroTeam;
             }
+        }
+
+        String clientTeam = getClientPlayerTeam();
+        if (clientTeam != null) {
+            return clientTeam;
         }
 
         return getScoreboardTeam(player.getTeam());
@@ -149,6 +155,17 @@ public final class EspetroTeamBridge {
             Class<?> espetroClass = Class.forName(ESPETRO_CLASS_NAME);
             Method method = espetroClass.getMethod("getPlayerTeam", ServerPlayer.class);
             Object result = method.invoke(null, player);
+            return result instanceof String team ? canonicalizeTeamName(team) : null;
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
+    private static String getClientPlayerTeam() {
+        try {
+            Class<?> clientGameStateClass = Class.forName(ESPETRO_CLIENT_GAME_STATE_CLASS_NAME);
+            Method method = clientGameStateClass.getMethod("getPlayerTeam");
+            Object result = method.invoke(null);
             return result instanceof String team ? canonicalizeTeamName(team) : null;
         } catch (ReflectiveOperationException ignored) {
             return null;

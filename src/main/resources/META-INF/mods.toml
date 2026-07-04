@@ -1,7 +1,7 @@
 modLoader="javafml"
 loaderVersion="${loader_version_range}"
 license="${mod_license}"
-issueTrackerURL="https://github.com/Hydroceder/hcrpoints/issues"
+issueTrackerURL="https://github.com/Hydroceder/espoints/issues"
 
 [[mods]]
 modId="${mod_id}"

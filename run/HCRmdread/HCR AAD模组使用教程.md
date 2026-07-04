@@ -45,7 +45,7 @@ HCR AAD（Attack and Defense）是一个基于Minecraft Forge的模组，为游�
 ```
 - `<序号>`：预设ID
 - 保存当前所有据点设置为预设
-- 预设文件保存在config/hcrpoints/capture_presets目录下
+- 预设文件保存在config/espoints/capture_presets目录下
 
 **加载据点预设**
 ```
@@ -233,14 +233,14 @@ HCR AAD（Attack and Defense）是一个基于Minecraft Forge的模组，为游�
 模组使用Forge配置系统，分为客户端配置和服务端配置。
 
 ### 4.1 客户端配置
-- **位置**：`游戏目录/config/hcrpoints-client.toml`
+- **位置**：`游戏目录/config/espoints-client.toml`
 - **包含内容**：
   - 战术地图的显示选项
   - 音频设置
   - HUD显示选项
 
 ### 4.2 服务端配置
-- **位置**：`游戏目录/config/hcrpoints-common.toml`
+- **位置**：`游戏目录/config/espoints-common.toml`
 - **包含内容**：
   - 兵力系统设置
   - 操作模式默认值
@@ -307,7 +307,7 @@ A: 请检查：
 - 音频文件并不会从服务端向客户端同步，因为大多数时候音频文件十分巨大，对服务器是个不小的负担，因此需要你自己寻找音频并放入文件夹。
 
 ### Q: 如何修改快捷键？
-A: 进入游戏设置 -> 按键控制 -> 在"hcrpoints"分类下修改对应快捷键
+A: 进入游戏设置 -> 按键控制 -> 在"espoints"分类下修改对应快捷键
 
 ### Q: 为什么提示权限不足？
 A: 所有管理员命令都需要2级管理员权限

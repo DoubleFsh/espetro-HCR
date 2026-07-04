@@ -1,9 +1,9 @@
 Manifest-Version: 1.0
-Specification-Title: hcrpoints
+Specification-Title: espoints
 Specification-Vendor: Hydroceder
 Specification-Version: 1
 Implementation-Title: ds
-Implementation-Version: 1.0.0-final
+Implementation-Version: 1.0.4-final
 Implementation-Vendor: Hydroceder
-Implementation-Timestamp: 2026-06-21T04:40:19+0800
+Implementation-Timestamp: 2026-07-04T18:20:56+0800
 

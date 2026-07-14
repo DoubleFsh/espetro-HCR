@@ -71,6 +71,29 @@ CapturePoint point = manager.getCapturePoint("A");
 
 不要在网络线程直接修改 `CapturePointManager`；切换到服务器主线程。
 
+### `ESPointsCommanderScriptAPI`
+
+这是给 Espetro KubeJS 指挥官脚本使用的服务端静态桥接 API。Espetro 通过反射访问它，因此 ESPoints 不需要反向编译依赖 Espetro 的脚本实现类。
+
+```java
+boolean inside = ESPointsCommanderScriptAPI.isWithinTacticalMap(x, z);
+ESPointsCommanderScriptAPI.placeArtilleryTarget(serverPlayer, x, z);
+double minX = ESPointsCommanderScriptAPI.getMapMinX();
+String team = ESPointsCommanderScriptAPI.getPlayerTeam(serverPlayer);
+```
+
+常用方法：
+
+| 方法 | 作用 |
+| --- | --- |
+| `isWithinTacticalMap(x, z)` | 使用 `TacticalMapJsonConfig.TacticalMapBounds` 校验坐标 |
+| `getMapMinX/MinZ/MaxX/MaxZ()` | 返回当前战术地图边界 |
+| `getMapWidth()` / `getMapHeight()` | 返回地图宽高 |
+| `getPlayerTeam(player)` | 返回 Espetro 规范阵营 |
+| `canPlaceTacticalMarker(player)` | 是否为 Espetro 指挥官或小队长 |
+| `placeMarker(player, typeId, x, z)` | 通过 `TacticalMarkerManager` 放置标点并同步同阵营 |
+| `placeArtilleryTarget(player, x, z)` | 放置 `ARTILLERY_TARGET` 标点 |
+
 ## 据点模型
 
 ### `CapturePoint`
@@ -137,7 +160,22 @@ TacticalMarkerManager.place(
 
 服务端会校验：调用者必须是 Espetro 指挥官或小队长、坐标必须在地图范围内、每队最多 64 个标点。删除只能由标点创建者执行。
 
-`TacticalMarkerType` 当前包含敌军步兵、坦克、步战车、轻型载具、直升机以及进攻/防守指令。
+`TacticalMarkerType` 当前包含敌军步兵、坦克、步战车、轻型载具、直升机、进攻/防守指令以及 `ARTILLERY_TARGET`。`ARTILLERY_TARGET` 是 Espetro `155火炮支援` 的结果标点，不会出现在普通右键标点菜单中。
+
+### Espetro 155火炮支援选点
+
+ESPoints 为 Espetro 的 `artillery_155` 指挥官技能提供战术地图选点能力：
+
+1. Espetro 服务端在技能通过权限、阶段和冷却校验后，通过反射调用 `OpenArtillerySupportMapMessage.sendTo(ServerPlayer)`。
+2. ESPoints 向该玩家发送 S2C 包，客户端打开 `ArtillerySupportMapScreen`。
+3. `ArtillerySupportMapScreen` 使用与 J 键 `CapturePointDetailsScreen` 相同的主面板尺寸规则，并调用 `TacticalMapHUD.renderArtillerySelectionMap` 渲染嵌入式战术地图。
+4. 玩家可使用鼠标滚轮缩放、左键拖拽地图；右键不会打开普通标点菜单，而是直接通过 `MapViewport.worldX/worldZ` 计算世界 X/Z。
+5. 客户端发送 `SelectArtillerySupportTargetMessage` 到服务端。服务端先校验 `TacticalMapJsonConfig.TacticalMapBounds`，再通过 `EspetroTeamBridge.submitArtillerySupportTarget` 反射调用 `EspetroAPI.submitArtillerySupportTarget(ServerPlayer, double, double)`。
+6. Espetro 负责二次权限校验、Y 坐标求值、KubeJS 指挥官技能回调和冷却。ESPoints 在提交成功后放置 `ARTILLERY_TARGET` 战术标点并同步给同阵营玩家。
+
+ESPoints 不生成炮击实体，也不调度炮击波次。默认 `155火炮支援` 的实体 ID、目标高度、覆盖半径、批次数量、间隔和入射角都由 Espetro 的 KubeJS `server_scripts` 决定。
+
+这条链路不让 ESPoints 编译期依赖 Espetro 的实现类，也不让 Espetro 编译期依赖 ESPoints 的客户端类；双方只依赖 Forge `mods.toml` 运行时依赖关系和反射 API。
 
 ## 配置类
 
@@ -169,6 +207,7 @@ NetworkHandler.INSTANCE.send(
 | 行动状态 | `SyncOperationModeMessage`, `SyncConfigMessage`, `SyncBastionsMessage` |
 | 地图 | `SyncPlayerPositionsMessage`, `SyncMapPlayerDisplayMessage`, `SyncTacticalMapConfigMessage` |
 | 战术标点 | `PlaceTacticalMarkerMessage`, `RemoveTacticalMarkerMessage`, `RequestTacticalMarkersMessage`, `SyncTacticalMarkersMessage` |
+| Espetro 火炮选点 | `OpenArtillerySupportMapMessage`, `SelectArtillerySupportTargetMessage` |
 | 客户端效果 | `ShowMessagePopupMessage`, `PlayLowReinforcementAudioMessage` |
 
 新增网络包时必须：
@@ -186,14 +225,14 @@ NetworkHandler.INSTANCE.send(
 | `ClientProxy` | 注册客户端按键 |
 | `AudioManager` | `fightBGM` 外部音频文件与低兵力 BGM |
 | `PlayerTeamIndicator` | 玩家头顶敌我标记 |
-| `TacticalMapHUD` | 地图坐标变换、背景、玩家、据点和标点渲染 |
+| `TacticalMapHUD` | 地图坐标变换、背景、玩家、据点、普通标点和155火炮选点模式渲染 |
 | `CapturePointHUD` | 据点轮播 |
 | `CurrentCapturePointHUD` | 当前所在据点 |
 | `AreaInfoHUD` | 区域信息 |
 | `ReinforcementsHUD` | 双方兵力与进度条 |
 | `MessagePopup` | 服务端驱动消息弹窗 |
 
-GUI 类：`CapturePointDetailsScreen`、`TacticalMapConfigScreen`、`ServerConfigScreen`、`MDRenderScreen`、`MutilScreen`、`HcrMutilWidgets`、`ScrollableList`、`ScreenFadeIn`。
+GUI 类：`CapturePointDetailsScreen`、`ArtillerySupportMapScreen`、`TacticalMapConfigScreen`、`ServerConfigScreen`、`MDRenderScreen`、`MutilScreen`、`HcrMutilWidgets`、`ScrollableList`、`ScreenFadeIn`。
 
 ## 类参考
 
@@ -203,6 +242,7 @@ GUI 类：`CapturePointDetailsScreen`、`TacticalMapConfigScreen`、`ServerConfi
 | --- | --- |
 | `HCRPointsMod` | Forge 主入口和生命周期注册 |
 | `HCRAPI` | 对外消息、地图和管理器访问 API |
+| `ESPointsCommanderScriptAPI` | 给 Espetro KubeJS 指挥官脚本使用的服务端战术地图和标点桥接 API |
 | `CapturePoint` | 单个据点状态模型 |
 | `CapturePointManager` | 据点、批次、兵力、同步和事件中心 |
 | `CaptureState` | 占领状态枚举 |
@@ -227,14 +267,14 @@ GUI 类：`CapturePointDetailsScreen`、`TacticalMapConfigScreen`、`ServerConfi
 | 类 | 说明 |
 | --- | --- |
 | `TacticalMarker` | 不可变标点记录 |
-| `TacticalMarkerType` | 标点类型与颜色 |
+| `TacticalMarkerType` | 标点类型、颜色和普通菜单可选性 |
 | `TacticalMarkerManager` | 服务端标点权限、寿命和阵营同步 |
-| `EspetroTeamBridge` | Espetro 阵营与权限适配 |
+| `EspetroTeamBridge` | Espetro 阵营、权限和155火炮支援坐标提交适配 |
 | `MapDisplayMode` | 地图显示模式枚举 |
 
 ### 网络消息
 
-`NetworkHandler`、`SyncCapturePointsMessage`、`SyncConfigMessage`、`SyncMapPlayerDisplayMessage`、`SyncOperationModeMessage`、`SyncPlayerPositionsMessage`、`SyncTacticalMapConfigMessage`、`SyncTacticalMarkersMessage`、`SyncCapturePointOverviewMessage`、`SyncBastionsMessage`、`RequestCapturePointOverviewMessage`、`RequestTacticalMarkersMessage`、`PlaceTacticalMarkerMessage`、`RemoveTacticalMarkerMessage`、`ShowMessagePopupMessage`、`PlayLowReinforcementAudioMessage`。
+`NetworkHandler`、`SyncCapturePointsMessage`、`SyncConfigMessage`、`SyncMapPlayerDisplayMessage`、`SyncOperationModeMessage`、`SyncPlayerPositionsMessage`、`SyncTacticalMapConfigMessage`、`SyncTacticalMarkersMessage`、`SyncCapturePointOverviewMessage`、`SyncBastionsMessage`、`RequestCapturePointOverviewMessage`、`RequestTacticalMarkersMessage`、`PlaceTacticalMarkerMessage`、`RemoveTacticalMarkerMessage`、`OpenArtillerySupportMapMessage`、`SelectArtillerySupportTargetMessage`、`ShowMessagePopupMessage`、`PlayLowReinforcementAudioMessage`。
 
 ### 工具
 

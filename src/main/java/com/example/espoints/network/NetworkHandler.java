@@ -9,7 +9,7 @@ import net.minecraftforge.network.simple.SimpleChannel;
  * 网络处理器类
  */
 public class NetworkHandler {
-    private static final String PROTOCOL_VERSION = "5";
+    private static final String PROTOCOL_VERSION = "8";
     
     public static final SimpleChannel INSTANCE = NetworkRegistry.newSimpleChannel(
         ResourceLocation.fromNamespaceAndPath(ESPointsMod.MOD_ID, "main"),
@@ -80,6 +80,12 @@ public class NetworkHandler {
             .consumerMainThread(SyncTacticalMapConfigMessage::handle)
             .add();
 
+        INSTANCE.messageBuilder(SyncTacticalMapBackgroundMessage.class, nextPacketId())
+            .encoder(SyncTacticalMapBackgroundMessage::encode)
+            .decoder(SyncTacticalMapBackgroundMessage::decode)
+            .consumerMainThread(SyncTacticalMapBackgroundMessage::handle)
+            .add();
+
         INSTANCE.messageBuilder(SyncBastionsMessage.class, nextPacketId())
             .encoder(SyncBastionsMessage::encode)
             .decoder(SyncBastionsMessage::decode)
@@ -120,6 +126,18 @@ public class NetworkHandler {
             .encoder(RemoveTacticalMarkerMessage::encode)
             .decoder(RemoveTacticalMarkerMessage::decode)
             .consumerMainThread(RemoveTacticalMarkerMessage::handle)
+            .add();
+
+        INSTANCE.messageBuilder(OpenArtillerySupportMapMessage.class, nextPacketId())
+            .encoder(OpenArtillerySupportMapMessage::encode)
+            .decoder(OpenArtillerySupportMapMessage::decode)
+            .consumerMainThread(OpenArtillerySupportMapMessage::handle)
+            .add();
+
+        INSTANCE.messageBuilder(SelectArtillerySupportTargetMessage.class, nextPacketId())
+            .encoder(SelectArtillerySupportTargetMessage::encode)
+            .decoder(SelectArtillerySupportTargetMessage::decode)
+            .consumerMainThread(SelectArtillerySupportTargetMessage::handle)
             .add();
     }
 }

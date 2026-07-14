@@ -134,6 +134,7 @@ public class TeamfightPresetManager {
                     serializablePoint.getBatch()
                 );
             }
+            manager.setTotalBatches(Math.max(1, manager.calculateTotalBatches()));
             
             // 恢复队伍角色和兵力
             Map<String, Integer> teamReinforcements = presetData.getTeamReinforcements();

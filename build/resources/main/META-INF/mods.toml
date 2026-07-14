@@ -5,8 +5,8 @@ issueTrackerURL="https://github.com/Hydroceder/espoints/issues"
 
 [[mods]]
 modId="espoints"
-version="1.0.4-final"
-displayName="HCR AAD"
+version="1.0.6-final"
+displayName="EsPoints"
 displayURL=""
 credits="Hydroceder"
 authors="Hydroceder"
@@ -36,6 +36,6 @@ description='''AI-Generated Mod: A mod that enables attack and defense in Minecr
 [[dependencies.espoints]]
     modId="espetro"
     mandatory=true
-    versionRange="[1.0.2-final,)"
+    versionRange="[1.0.6-final,)"
     ordering="AFTER"
     side="BOTH"

@@ -188,6 +188,23 @@ public final class EspetroTeamBridge {
         return false;
     }
 
+    public static boolean submitArtillerySupportTarget(ServerPlayer player, double x, double z) {
+        return submitCommanderSkillTarget(player, x, z);
+    }
+
+    public static boolean submitCommanderSkillTarget(ServerPlayer player, double x, double z) {
+        if (player == null || !Double.isFinite(x) || !Double.isFinite(z)) {
+            return false;
+        }
+        Boolean result = invokeStaticBooleanIfPresent(ESPETRO_API_CLASS_NAME, "submitCommanderSkillTarget",
+            new Class<?>[] {ServerPlayer.class, double.class, double.class}, player, x, z);
+        if (result != null) {
+            return result;
+        }
+        return invokeStaticBoolean(ESPETRO_API_CLASS_NAME, "submitArtillerySupportTarget",
+                new Class<?>[] {ServerPlayer.class, double.class, double.class}, player, x, z);
+    }
+
     private static boolean isCommander(ServerPlayer player) {
         if (invokeStaticBoolean(ESPETRO_API_CLASS_NAME, "isCommander",
                 new Class<?>[] {java.util.UUID.class}, player.getUUID())) {
@@ -267,6 +284,19 @@ public final class EspetroTeamBridge {
             Class<?> targetClass = Class.forName(className);
             Method method = targetClass.getMethod(methodName, parameterTypes);
             return Boolean.TRUE.equals(method.invoke(null, args));
+        } catch (ReflectiveOperationException ignored) {
+            return false;
+        }
+    }
+
+    private static Boolean invokeStaticBooleanIfPresent(String className, String methodName,
+                                                        Class<?>[] parameterTypes, Object... args) {
+        try {
+            Class<?> targetClass = Class.forName(className);
+            Method method = targetClass.getMethod(methodName, parameterTypes);
+            return Boolean.TRUE.equals(method.invoke(null, args));
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            return null;
         } catch (ReflectiveOperationException ignored) {
             return false;
         }

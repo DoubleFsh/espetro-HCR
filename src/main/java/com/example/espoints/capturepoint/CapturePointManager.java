@@ -8,10 +8,12 @@ import com.example.espoints.util.EspetroTeamBridge;
 import com.example.espoints.util.ModLogger;
 import com.example.espoints.capturepoint.CaptureState;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.event.TickEvent;
@@ -46,6 +48,8 @@ public class CapturePointManager {
 
     // 兵站与基地通常不变，只在玩家可见数据实际变化时重发。
     private final Map<UUID, BastionSyncState> lastBastionSyncByPlayer = new HashMap<>();
+    private List<SyncBastionsMessage.VehicleSupplyStationInfo> cachedEspetroVehicleSupplyStations = List.of();
+    private long cachedEspetroVehicleSupplyStationTick = Long.MIN_VALUE;
     
     // 存储玩家进入据点的时间，键为玩家UUID，值为进入时间（毫秒）
     private final Map<UUID, Long> playerEnterTime = new ConcurrentHashMap<>();
@@ -80,6 +84,12 @@ public class CapturePointManager {
     private static final String ESPETRO_BASTION_MANAGER_CLASS = "org.espetro.bastion.BastionManager";
     private static final String ESPETRO_GAME_STATE_MANAGER_CLASS = "org.espetro.team.GameStateManager";
     private static final String ESPETRO_SPAWN_POINT_CONFIG_CLASS = "org.espetro.team.SpawnPointConfig";
+    private static final String ESPETRO_VEHICLE_SUPPLY_STATION_TAG = "espetro_vehicle_supply_station";
+    private static final String ESPETRO_VEHICLE_SUPPLY_STATION_TEAM_KEY = "espetro_vehicle_supply_station_team";
+    private static final String ESPETRO_VEHICLE_SUPPLY_STATION_ID_KEY = "espetro_vehicle_supply_station_id";
+    private static final String ESPETRO_VEHICLE_SUPPLY_STATION_X_KEY = "espetro_vehicle_supply_station_x";
+    private static final String ESPETRO_VEHICLE_SUPPLY_STATION_Y_KEY = "espetro_vehicle_supply_station_y";
+    private static final String ESPETRO_VEHICLE_SUPPLY_STATION_Z_KEY = "espetro_vehicle_supply_station_z";
     private boolean espetroDeployingCapturePointsActivated = false;
     private boolean tacticalMarkersClearedForWaiting = false;
 
@@ -87,7 +97,8 @@ public class CapturePointManager {
     }
 
     private record BastionSyncState(List<SyncBastionsMessage.BastionInfo> bastions,
-                                    List<SyncBastionsMessage.BaseInfo> bases) {
+                                    List<SyncBastionsMessage.BaseInfo> bases,
+                                    List<SyncBastionsMessage.VehicleSupplyStationInfo> vehicleSupplyStations) {
     }
 
     
@@ -254,6 +265,8 @@ public class CapturePointManager {
     public void resetTransientSyncCaches() {
         lastBroadcastPlayerMetadata.clear();
         lastBastionSyncByPlayer.clear();
+        cachedEspetroVehicleSupplyStations = List.of();
+        cachedEspetroVehicleSupplyStationTick = Long.MIN_VALUE;
     }
     
     /**
@@ -1683,14 +1696,22 @@ public class CapturePointManager {
     private void syncEspetroBastionsToPlayer(ServerPlayer player) {
         List<SyncBastionsMessage.BastionInfo> bastions = getVisibleEspetroBastions(player);
         List<SyncBastionsMessage.BaseInfo> bases = getVisibleEspetroBases(player);
+        List<SyncBastionsMessage.VehicleSupplyStationInfo> vehicleSupplyStations =
+            getVisibleEspetroVehicleSupplyStations(player);
         BastionSyncState previous = lastBastionSyncByPlayer.get(player.getUUID());
-        if (previous != null && previous.bastions().equals(bastions) && previous.bases().equals(bases)) {
+        if (previous != null
+                && previous.bastions().equals(bastions)
+                && previous.bases().equals(bases)
+                && previous.vehicleSupplyStations().equals(vehicleSupplyStations)) {
             return;
         }
 
         lastBastionSyncByPlayer.put(player.getUUID(),
-            new BastionSyncState(List.copyOf(bastions), List.copyOf(bases)));
-        SyncBastionsMessage.sendToPlayer(player, bastions, bases);
+            new BastionSyncState(
+                List.copyOf(bastions),
+                List.copyOf(bases),
+                List.copyOf(vehicleSupplyStations)));
+        SyncBastionsMessage.sendToPlayer(player, bastions, bases, vehicleSupplyStations);
     }
 
     private List<SyncBastionsMessage.BastionInfo> getVisibleEspetroBastions(ServerPlayer player) {
@@ -1791,6 +1812,263 @@ public class CapturePointManager {
         return bases;
     }
 
+    private List<SyncBastionsMessage.VehicleSupplyStationInfo> getVisibleEspetroVehicleSupplyStations(ServerPlayer player) {
+        List<SyncBastionsMessage.VehicleSupplyStationInfo> stations = new ArrayList<>();
+        if (!ModList.get().isLoaded(ESPETRO_MOD_ID)) {
+            return stations;
+        }
+
+        try {
+            String visibleTeam = getVisibleEspetroBastionTeam(player);
+            if (visibleTeam == null || visibleTeam.isEmpty()) {
+                return stations;
+            }
+
+            for (SyncBastionsMessage.VehicleSupplyStationInfo station
+                    : getAllEspetroVehicleSupplyStations(player.getServer())) {
+                if (visibleTeam.equals(station.getTeam())) {
+                    stations.add(station);
+                }
+            }
+        } catch (Exception e) {
+            ModLogger.warn("同步 Espetro 载具补给站信息失败，已跳过: " + e.getMessage());
+        }
+
+        return stations;
+    }
+
+    private List<SyncBastionsMessage.VehicleSupplyStationInfo> getAllEspetroVehicleSupplyStations(MinecraftServer server) {
+        if (server == null) {
+            cachedEspetroVehicleSupplyStations = List.of();
+            cachedEspetroVehicleSupplyStationTick = Long.MIN_VALUE;
+            return cachedEspetroVehicleSupplyStations;
+        }
+
+        long currentTick = server.getTickCount();
+        if (cachedEspetroVehicleSupplyStationTick == currentTick) {
+            return cachedEspetroVehicleSupplyStations;
+        }
+
+        Map<String, SyncBastionsMessage.VehicleSupplyStationInfo> stationsById = new LinkedHashMap<>();
+        for (ServerLevel level : server.getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity == null
+                        || entity.isRemoved()
+                        || !isEspetroVehicleSupplyStationEntity(entity)) {
+                    continue;
+                }
+
+                String stationTeam = getEspetroVehicleSupplyStationTeam(entity);
+                if (stationTeam == null) {
+                    continue;
+                }
+
+                BlockPos pos = getEspetroVehicleSupplyStationPosition(entity);
+                String stationId = getEspetroVehicleSupplyStationId(entity);
+                String groupKey = stationId == null || stationId.isBlank()
+                    ? stationTeam + ":" + pos.asLong()
+                    : stationId;
+                stationsById.putIfAbsent(groupKey, new SyncBastionsMessage.VehicleSupplyStationInfo(
+                    getEspetroVehicleSupplyStationName(entity),
+                    stationTeam,
+                    pos
+                ));
+            }
+        }
+
+        List<SyncBastionsMessage.VehicleSupplyStationInfo> stations = new ArrayList<>(stationsById.values());
+        stations.sort(Comparator
+            .comparing(SyncBastionsMessage.VehicleSupplyStationInfo::getName)
+            .thenComparingInt(info -> info.getPos().getX())
+            .thenComparingInt(info -> info.getPos().getZ()));
+        cachedEspetroVehicleSupplyStations = List.copyOf(stations);
+        cachedEspetroVehicleSupplyStationTick = currentTick;
+        return cachedEspetroVehicleSupplyStations;
+    }
+
+    private boolean isEspetroVehicleSupplyStationEntity(Entity entity) {
+        if (entity.getTags().contains(ESPETRO_VEHICLE_SUPPLY_STATION_TAG)) {
+            return true;
+        }
+
+        CompoundTag data = entity.getPersistentData();
+        if (data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_TEAM_KEY)
+                || data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_ID_KEY)
+                || data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_X_KEY)
+                || data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_Y_KEY)
+                || data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_Z_KEY)) {
+            return true;
+        }
+
+        Component customName = entity.getCustomName();
+        return customName != null && customName.getString().contains("载具补给站");
+    }
+
+    private String getEspetroVehicleSupplyStationTeam(Entity entity) {
+        CompoundTag data = entity.getPersistentData();
+        String team = EspetroTeamBridge.canonicalizeTeamName(
+            data.getString(ESPETRO_VEHICLE_SUPPLY_STATION_TEAM_KEY));
+        if (team != null) {
+            return team;
+        }
+
+        for (String tag : entity.getTags()) {
+            String fromSupplyPrefix = readTeamSuffix(tag, ESPETRO_VEHICLE_SUPPLY_STATION_TEAM_KEY + "_");
+            if (fromSupplyPrefix != null) {
+                return fromSupplyPrefix;
+            }
+
+            String fromTeamPrefix = readTeamSuffix(tag, "espetro_team_");
+            if (fromTeamPrefix != null) {
+                return fromTeamPrefix;
+            }
+        }
+
+        return inferEspetroVehicleSupplyStationTeam(getEspetroVehicleSupplyStationPosition(entity));
+    }
+
+    private String inferEspetroVehicleSupplyStationTeam(BlockPos stationPos) {
+        String nearestBaseTeam = findNearestEspetroBaseTeam(stationPos);
+        if (nearestBaseTeam != null) {
+            return nearestBaseTeam;
+        }
+        return findNearestEspetroBastionTeam(stationPos);
+    }
+
+    private String findNearestEspetroBaseTeam(BlockPos stationPos) {
+        try {
+            Class<?> spawnPointConfigClass = Class.forName(ESPETRO_SPAWN_POINT_CONFIG_CLASS);
+            Method getAllSpawnPointsMethod = spawnPointConfigClass.getMethod("getAllSpawnPoints");
+            Object result = getAllSpawnPointsMethod.invoke(null);
+            if (!(result instanceof Map<?, ?> spawnPoints)) {
+                return null;
+            }
+
+            String nearestTeam = null;
+            double nearestDistanceSquared = Double.MAX_VALUE;
+            for (Map.Entry<?, ?> entry : spawnPoints.entrySet()) {
+                String team = EspetroTeamBridge.canonicalizeTeamName(String.valueOf(entry.getKey()));
+                Object spawnPoint = entry.getValue();
+                if (team == null || spawnPoint == null) {
+                    continue;
+                }
+
+                BlockPos basePos = BlockPos.containing(
+                    readDoubleField(spawnPoint, "x"),
+                    readDoubleField(spawnPoint, "y"),
+                    readDoubleField(spawnPoint, "z")
+                );
+                double distanceSquared = horizontalDistanceSquared(stationPos, basePos);
+                if (distanceSquared < nearestDistanceSquared) {
+                    nearestDistanceSquared = distanceSquared;
+                    nearestTeam = team;
+                }
+            }
+            return nearestTeam;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String findNearestEspetroBastionTeam(BlockPos stationPos) {
+        try {
+            Class<?> managerClass = Class.forName(ESPETRO_BASTION_MANAGER_CLASS);
+            Object manager = managerClass.getMethod("getInstance").invoke(null);
+            Method getTeamBastionsMethod = managerClass.getMethod("getTeamBastions", String.class);
+
+            String nearestTeam = null;
+            double nearestDistanceSquared = Double.MAX_VALUE;
+            for (String candidateTeam : List.of("ATTACK", "DEFEND")) {
+                Object result = getTeamBastionsMethod.invoke(manager, candidateTeam);
+                if (!(result instanceof Iterable<?> bastions)) {
+                    continue;
+                }
+
+                for (Object bastion : bastions) {
+                    if (bastion == null || !isEspetroBastionActive(bastion)) {
+                        continue;
+                    }
+
+                    BlockPos bastionPos = getEspetroBastionPosition(managerClass, manager, bastion);
+                    if (bastionPos == null) {
+                        continue;
+                    }
+
+                    String team = EspetroTeamBridge.canonicalizeTeamName(
+                        String.valueOf(bastion.getClass().getMethod("getTeam").invoke(bastion)));
+                    if (team == null) {
+                        team = candidateTeam;
+                    }
+
+                    double distanceSquared = horizontalDistanceSquared(stationPos, bastionPos);
+                    if (distanceSquared < nearestDistanceSquared) {
+                        nearestDistanceSquared = distanceSquared;
+                        nearestTeam = team;
+                    }
+                }
+            }
+            return nearestTeam;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private double horizontalDistanceSquared(BlockPos first, BlockPos second) {
+        double dx = first.getX() - second.getX();
+        double dz = first.getZ() - second.getZ();
+        return dx * dx + dz * dz;
+    }
+
+    private String readTeamSuffix(String tag, String prefix) {
+        if (tag == null || !tag.startsWith(prefix)) {
+            return null;
+        }
+        return EspetroTeamBridge.canonicalizeTeamName(tag.substring(prefix.length()));
+    }
+
+    private String getEspetroVehicleSupplyStationId(Entity entity) {
+        CompoundTag data = entity.getPersistentData();
+        if (data.hasUUID(ESPETRO_VEHICLE_SUPPLY_STATION_ID_KEY)) {
+            return data.getUUID(ESPETRO_VEHICLE_SUPPLY_STATION_ID_KEY).toString();
+        }
+
+        String stringId = data.getString(ESPETRO_VEHICLE_SUPPLY_STATION_ID_KEY);
+        if (!stringId.isBlank()) {
+            return stringId;
+        }
+
+        String tagPrefix = ESPETRO_VEHICLE_SUPPLY_STATION_ID_KEY + "_";
+        for (String tag : entity.getTags()) {
+            if (tag != null && tag.startsWith(tagPrefix)) {
+                return tag.substring(tagPrefix.length());
+            }
+        }
+        return null;
+    }
+
+    private BlockPos getEspetroVehicleSupplyStationPosition(Entity entity) {
+        CompoundTag data = entity.getPersistentData();
+        if (data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_X_KEY)
+                && data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_Y_KEY)
+                && data.contains(ESPETRO_VEHICLE_SUPPLY_STATION_Z_KEY)) {
+            return new BlockPos(
+                data.getInt(ESPETRO_VEHICLE_SUPPLY_STATION_X_KEY),
+                data.getInt(ESPETRO_VEHICLE_SUPPLY_STATION_Y_KEY),
+                data.getInt(ESPETRO_VEHICLE_SUPPLY_STATION_Z_KEY)
+            );
+        }
+
+        return entity.blockPosition();
+    }
+
+    private String getEspetroVehicleSupplyStationName(Entity entity) {
+        Component customName = entity.getCustomName();
+        if (customName != null && !customName.getString().isBlank()) {
+            return customName.getString();
+        }
+        return "载具补给站";
+    }
+
     private double readDoubleField(Object target, String fieldName) throws ReflectiveOperationException {
         Object value = target.getClass().getField(fieldName).get(target);
         return value instanceof Number number ? number.doubleValue() : 0.0D;
@@ -1884,6 +2162,7 @@ public class CapturePointManager {
 
             // 向新登录的玩家同步数据包驱动的战术地图配置。
             com.example.espoints.network.SyncTacticalMapConfigMessage.sendToPlayer(player);
+            com.example.espoints.network.SyncTacticalMapBackgroundMessage.sendToPlayer(player);
             
             // 向新登录的玩家同步据点数据
             syncToClient(player);
@@ -2014,25 +2293,18 @@ public class CapturePointManager {
 
         espetroDeployingCapturePointsActivated = true;
         if (!operationModeRunning) {
-            int detectedTotalBatches = totalBatches > 0 ? totalBatches : getMaxPlannedBatch();
+            int plannedTotalBatches = calculateTotalBatches();
+            int detectedTotalBatches = Math.max(totalBatches, plannedTotalBatches);
             if (detectedTotalBatches <= 0) {
                 return;
             }
             startOperationMode(detectedTotalBatches, endBehavior == null || endBehavior.isEmpty() ? "terminate" : endBehavior);
-            ModLogger.info("检测到 Espetro 进入部署阶段，已自动显示当前批次据点");
+            ModLogger.info("检测到 Espetro 进入部署阶段，已按 " + detectedTotalBatches + " 个批次自动显示当前批次据点");
         } else if (capturePoints.isEmpty()) {
             createCurrentBatchPoints();
             syncOperationModeToClients();
             ModLogger.info("检测到 Espetro 进入部署阶段，已同步当前批次据点");
         }
-    }
-
-    private int getMaxPlannedBatch() {
-        int maxBatch = 0;
-        for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
-            maxBatch = Math.max(maxBatch, plannedPoint.getBatch());
-        }
-        return maxBatch;
     }
 
     private String getEspetroCurrentPhaseName() {

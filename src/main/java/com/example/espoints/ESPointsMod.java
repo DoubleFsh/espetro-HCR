@@ -7,6 +7,7 @@ import com.example.espoints.config.TacticalMapConfig;
 import com.example.espoints.config.TacticalMapDataReloadListener;
 import com.example.espoints.config.TeamfightJsonConfig;
 import com.example.espoints.network.NetworkHandler;
+import com.example.espoints.network.SyncTacticalMapBackgroundMessage;
 import com.example.espoints.network.SyncTacticalMapConfigMessage;
 import com.example.espoints.tactical.TacticalMarkerManager;
 import net.minecraftforge.api.distmarker.Dist;
@@ -158,8 +159,10 @@ public class ESPointsMod {
     public void onDatapackSync(OnDatapackSyncEvent event) {
         if (event.getPlayer() != null) {
             SyncTacticalMapConfigMessage.sendToPlayer(event.getPlayer());
+            SyncTacticalMapBackgroundMessage.sendToPlayer(event.getPlayer());
         } else {
             SyncTacticalMapConfigMessage.broadcastToAll();
+            SyncTacticalMapBackgroundMessage.broadcastToAll();
         }
     }
     

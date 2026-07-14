@@ -20,8 +20,8 @@
 | `minecraft_version` | `1.20.1` | 目标游戏版本 |
 | `forge_version` | `47.4.0` | Forge 开发版本 |
 | `mod_id` | `espoints` | 资源命名空间和模组 ID |
-| `mod_version` | `1.0.3-final` | 构建版本 |
-| `espetro_version` | `1.0.2-final` | Espetro 最低版本 |
+| `mod_version` | `1.0.6-final` | 构建版本 |
+| `espetro_version` | `1.0.6-final` | Espetro 最低版本 |
 | `mod_group_id` | `com.example.espoints` | Maven group |
 
 `META-INF/mods.toml` 声明 Forge 47、Minecraft 1.20.1、MUtil 6.3.0 和 Espetro 最低版本。变更版本时应同步更新 Gradle 属性、依赖声明和元数据范围。
@@ -211,6 +211,8 @@ world/datapacks/my_hcr_config/
 | `tacticalMarkerFadeSeconds` | Integer | 120 | 淡出时间，至少 1 且不超过总寿命 |
 
 执行 `/reload` 后服务端应用配置并同步所有客户端。旧文件 `config/hcr_tactical_map.json` 已不再读取，应迁移到数据包路径。
+
+Espetro `155火炮支援` 选点同样使用这里的 `topLeftX/topLeftZ/bottomRightX/bottomRightZ` 作为服务端边界。客户端右键选点后，`SelectArtillerySupportTargetMessage` 会先检查坐标是否在 `TacticalMapBounds` 内，越界请求不会交给 Espetro；通过校验后由 Espetro 的 KubeJS 指挥官技能回调执行实际火力效果。ESPoints 只负责坐标提交和 `ARTILLERY_TARGET` 标点同步。
 
 `backgroundImage` 支持以下写法：
 

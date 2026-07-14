@@ -11,6 +11,7 @@ import com.example.espoints.network.NetworkHandler;
 import com.example.espoints.network.PlaceTacticalMarkerMessage;
 import com.example.espoints.network.RemoveTacticalMarkerMessage;
 import com.example.espoints.network.RequestTacticalMarkersMessage;
+import com.example.espoints.network.SelectArtillerySupportTargetMessage;
 import com.example.espoints.tactical.TacticalMarker;
 import com.example.espoints.tactical.TacticalMarkerType;
 import com.example.espoints.util.EspetroTeamBridge;
@@ -37,12 +38,14 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import org.lwjgl.glfw.GLFW;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -61,13 +64,18 @@ public class TacticalMapHUD implements IGuiOverlay {
         ResourceLocation.withDefaultNamespace("textures/map/map_icons.png");
     private static final int MAP_BACKGROUND_FALLBACK_COLOR = 0xAA1D211B;
     // 所有地图标志使用最大显示范围时的固定像素尺寸，不再随缩放变化。
-    private static final int LOCAL_PLAYER_MARKER_SIZE = 8;
-    private static final int TEAMMATE_MARKER_SIZE = 7;
-    private static final int CAPTURE_POINT_MARKER_SIZE = 5;
-    private static final int BASTION_MARKER_SIZE = 7;
-    private static final int BASE_MARKER_SIZE = 9;
-    private static final int TACTICAL_MARKER_SIZE = 9;
+    private static final int LOCAL_PLAYER_MARKER_SIZE = 7;
+    private static final int TEAMMATE_MARKER_SIZE = 6;
+    private static final int CAPTURE_POINT_MARKER_SIZE = 3;
+    private static final int BASTION_MARKER_SIZE = 5;
+    private static final int VEHICLE_SUPPLY_STATION_MARKER_SIZE = 6;
+    private static final int BASE_MARKER_SIZE = 7;
+    private static final int TACTICAL_MARKER_SIZE = 7;
+    private static final int SAME_BATCH_ROUTE_COLOR = 0xCCFFD166;
     private static final int SELECTED_DEPLOYMENT_FRAME_SIZE = 15;
+    private static final int SELECTED_DEPLOYMENT_FRAME_MAX_SIZE = 24;
+    private static final long SELECTED_DEPLOYMENT_ANIMATION_MS = 180L;
+    private static final double SELECTED_DEPLOYMENT_MATCH_DISTANCE_SQUARED = 8.0D * 8.0D;
     private static final long MIN_PLAYER_INTERPOLATION_MS = 50L;
     private static final long MAX_PLAYER_INTERPOLATION_MS = 1250L;
     private static final double PLAYER_TELEPORT_DISTANCE_SQUARED = 256.0D * 256.0D;
@@ -89,6 +97,7 @@ public class TacticalMapHUD implements IGuiOverlay {
     private List<CapturePoint> allPoints = List.of();
     private List<SyncBastionsMessage.BastionInfo> visibleBastions = List.of();
     private List<SyncBastionsMessage.BaseInfo> visibleBases = List.of();
+    private List<SyncBastionsMessage.VehicleSupplyStationInfo> visibleVehicleSupplyStations = List.of();
     private List<TacticalMarker> visibleTacticalMarkers = List.of();
     
     // 存储从服务端同步的玩家位置
@@ -117,6 +126,9 @@ public class TacticalMapHUD implements IGuiOverlay {
     private String backgroundTextureKey = "";
     private int backgroundTextureWidth;
     private int backgroundTextureHeight;
+    private String syncedBackgroundImagePath = "";
+    private String syncedBackgroundImageKey = "";
+    private byte[] syncedBackgroundImageBytes;
     private int lastEmbeddedMapLeft = Integer.MIN_VALUE;
     private int lastEmbeddedMapTop = Integer.MIN_VALUE;
     private int lastEmbeddedMapWidth;
@@ -134,6 +146,7 @@ public class TacticalMapHUD implements IGuiOverlay {
     private int markerMenuY;
     private double pendingMarkerWorldX;
     private double pendingMarkerWorldZ;
+    private boolean artillerySelectionMode;
     private boolean suppressMapDragUntilRelease;
     private HoveredMapMarker hoveredMapMarker;
     private double hoveredMapMarkerDistanceSquared = Double.MAX_VALUE;
@@ -143,6 +156,7 @@ public class TacticalMapHUD implements IGuiOverlay {
     private boolean hasSelectedDeploymentPoint;
     private double selectedDeploymentX;
     private double selectedDeploymentZ;
+    private long selectedDeploymentAnimationStartedAt;
     
     public TacticalMapHUD() {
         // 注册事件监听器
@@ -167,12 +181,23 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     public void syncBastionsFromServer(List<SyncBastionsMessage.BastionInfo> bastions) {
         this.visibleBastions = List.copyOf(bastions);
+        this.visibleBases = List.of();
+        this.visibleVehicleSupplyStations = List.of();
     }
 
     public void syncBastionsFromServer(List<SyncBastionsMessage.BastionInfo> bastions,
                                        List<SyncBastionsMessage.BaseInfo> bases) {
+        syncBastionsFromServer(bastions, bases, List.of());
+    }
+
+    public void syncBastionsFromServer(List<SyncBastionsMessage.BastionInfo> bastions,
+                                       List<SyncBastionsMessage.BaseInfo> bases,
+                                       List<SyncBastionsMessage.VehicleSupplyStationInfo> vehicleSupplyStations) {
         this.visibleBastions = List.copyOf(bastions);
         this.visibleBases = List.copyOf(bases);
+        this.visibleVehicleSupplyStations = vehicleSupplyStations == null
+            ? List.of()
+            : List.copyOf(vehicleSupplyStations);
     }
 
     public void syncTacticalMarkersFromServer(List<TacticalMarker> markers) {
@@ -260,6 +285,48 @@ public class TacticalMapHUD implements IGuiOverlay {
         resetVisibleSpan(config);
         draggingMap = false;
         customMapCenter = false;
+        String configuredImagePath = config.backgroundImage == null ? "" : config.backgroundImage.trim();
+        if (!syncedBackgroundImagePath.isEmpty() && !syncedBackgroundImagePath.equals(configuredImagePath)) {
+            clearSyncedBackgroundImage(syncedBackgroundImagePath);
+        }
+        releaseBackgroundTexture();
+    }
+
+    public void applySyncedBackgroundImage(String imagePath, String imageKey, byte[] imageBytes) {
+        String normalizedImagePath = imagePath == null ? "" : imagePath.trim();
+        if (normalizedImagePath.isEmpty() || imageBytes == null || imageBytes.length == 0) {
+            clearSyncedBackgroundImage(normalizedImagePath);
+            return;
+        }
+
+        syncedBackgroundImagePath = normalizedImagePath;
+        syncedBackgroundImageKey = imageKey == null || imageKey.isBlank()
+            ? normalizedImagePath + ":" + imageBytes.length
+            : imageKey;
+        syncedBackgroundImageBytes = Arrays.copyOf(imageBytes, imageBytes.length);
+        releaseBackgroundTexture();
+    }
+
+    public void clearSyncedBackgroundImage(String imagePath) {
+        String normalizedImagePath = imagePath == null ? "" : imagePath.trim();
+        if (!normalizedImagePath.isEmpty() && !normalizedImagePath.equals(syncedBackgroundImagePath)) {
+            return;
+        }
+
+        syncedBackgroundImagePath = "";
+        syncedBackgroundImageKey = "";
+        syncedBackgroundImageBytes = null;
+        releaseBackgroundTexture();
+    }
+
+    public void clearServerSyncedBackgroundState() {
+        syncedBackgroundImagePath = "";
+        syncedBackgroundImageKey = "";
+        syncedBackgroundImageBytes = null;
+        isMapVisible = false;
+        visibleWorldSpan = -1.0D;
+        draggingMap = false;
+        customMapCenter = false;
         releaseBackgroundTexture();
     }
 
@@ -268,6 +335,11 @@ public class TacticalMapHUD implements IGuiOverlay {
         if (!Double.isFinite(x) || !Double.isFinite(z)) {
             clearSelectedDeploymentPoint();
             return;
+        }
+        if (!hasSelectedDeploymentPoint
+                || Math.abs(selectedDeploymentX - x) > 0.01D
+                || Math.abs(selectedDeploymentZ - z) > 0.01D) {
+            selectedDeploymentAnimationStartedAt = System.currentTimeMillis();
         }
         selectedDeploymentX = x;
         selectedDeploymentZ = z;
@@ -298,7 +370,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         int mapLeft = screenWidth - mapWidth - margin;
         int mapTop = margin;
         renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
-            "战术地图 (V键关闭) " + getRangeText() + " C+/B-", false);
+            "战术地图 (V键关闭) " + getRangeText() + " C+/B-", false, partialTick);
     }
 
     public void renderEmbeddedMap(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth, int mapHeight, float partialTick) {
@@ -320,7 +392,68 @@ public class TacticalMapHUD implements IGuiOverlay {
         lastEmbeddedMapScreen = currentScreen;
         lastEmbeddedMapRenderMs = System.currentTimeMillis();
         renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
-            "战术地图 " + getRangeText() + " 鼠标滚轮缩放", true);
+            "战术地图 " + getRangeText() + " 鼠标滚轮缩放", true, partialTick);
+    }
+
+    public void beginArtillerySelection() {
+        artillerySelectionMode = true;
+        markerMenuVisible = false;
+        suppressMapDragUntilRelease = false;
+    }
+
+    public void endArtillerySelection() {
+        artillerySelectionMode = false;
+        markerMenuVisible = false;
+        suppressMapDragUntilRelease = false;
+        draggingMap = false;
+        lastInteractiveViewport = null;
+        clearRecenterButton();
+    }
+
+    public void renderArtillerySelectionMap(GuiGraphics guiGraphics, int mapLeft, int mapTop,
+                                            int mapWidth, int mapHeight, float partialTick) {
+        Minecraft minecraft = Minecraft.getInstance();
+        Object currentScreen = minecraft.screen;
+        if (currentScreen != lastEmbeddedMapScreen) {
+            markerMenuVisible = false;
+            lastInteractiveViewport = null;
+        }
+        if (currentScreen != null && currentScreen != lastMarkerRequestScreen
+                && minecraft.getConnection() != null) {
+            NetworkHandler.INSTANCE.sendToServer(new RequestTacticalMarkersMessage());
+            lastMarkerRequestScreen = currentScreen;
+        }
+        lastEmbeddedMapLeft = mapLeft;
+        lastEmbeddedMapTop = mapTop;
+        lastEmbeddedMapWidth = mapWidth;
+        lastEmbeddedMapHeight = mapHeight;
+        lastEmbeddedMapScreen = currentScreen;
+        lastEmbeddedMapRenderMs = System.currentTimeMillis();
+        renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
+            "", true, false, partialTick);
+    }
+
+    public boolean zoomArtillerySelectionMap(double mouseX, double mouseY, double scrollDelta) {
+        if (!artillerySelectionMode || !isInsideLastEmbeddedMap(mouseX, mouseY)) {
+            return false;
+        }
+        zoomFromMouseWheel(scrollDelta);
+        return true;
+    }
+
+    public boolean submitArtillerySelectionTarget(double mouseX, double mouseY) {
+        if (!artillerySelectionMode
+                || !isInsideLastEmbeddedMap(mouseX, mouseY)
+                || lastInteractiveViewport == null
+                || !lastInteractiveViewport.containsScreen(mouseX, mouseY)) {
+            return false;
+        }
+
+        double worldX = lastInteractiveViewport.worldX(mouseX);
+        double worldZ = lastInteractiveViewport.worldZ(mouseY);
+        NetworkHandler.INSTANCE.sendToServer(new SelectArtillerySupportTargetMessage(worldX, worldZ));
+        Minecraft.getInstance().setScreen(null);
+        return true;
     }
 
     @SubscribeEvent
@@ -333,7 +466,8 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     @SubscribeEvent
     public void onScreenMouseClicked(ScreenEvent.MouseButtonPressed.Pre event) {
-        if (!isInsideLastEmbeddedMap(event.getMouseX(), event.getMouseY()) && !markerMenuVisible) {
+        boolean insideEmbeddedMap = isInsideLastEmbeddedMap(event.getMouseX(), event.getMouseY());
+        if (!insideEmbeddedMap && !markerMenuVisible) {
             return;
         }
 
@@ -363,6 +497,20 @@ public class TacticalMapHUD implements IGuiOverlay {
             }
         }
 
+        if (artillerySelectionMode && event.getButton() == GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
+            markerMenuVisible = false;
+            if (insideEmbeddedMap
+                    && lastInteractiveViewport != null
+                    && lastInteractiveViewport.containsScreen(event.getMouseX(), event.getMouseY())) {
+                double worldX = lastInteractiveViewport.worldX(event.getMouseX());
+                double worldZ = lastInteractiveViewport.worldZ(event.getMouseY());
+                NetworkHandler.INSTANCE.sendToServer(new SelectArtillerySupportTargetMessage(worldX, worldZ));
+                Minecraft.getInstance().setScreen(null);
+            }
+            event.setCanceled(true);
+            return;
+        }
+
         if (event.getButton() == GLFW.GLFW_MOUSE_BUTTON_LEFT
                 && isInsideLastRecenterButton(event.getMouseX(), event.getMouseY())) {
             recenterOnPlayer();
@@ -371,6 +519,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
 
         if (event.getButton() == GLFW.GLFW_MOUSE_BUTTON_LEFT
+                && !artillerySelectionMode
                 && lastInteractiveViewport != null
                 && lastInteractiveViewport.containsScreen(event.getMouseX(), event.getMouseY())) {
             TacticalMarker clickedMarker = findTacticalMarkerAt(event.getMouseX(), event.getMouseY());
@@ -390,6 +539,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
 
         if (event.getButton() == GLFW.GLFW_MOUSE_BUTTON_RIGHT
+                && !artillerySelectionMode
                 && lastInteractiveViewport != null
                 && lastInteractiveViewport.containsScreen(event.getMouseX(), event.getMouseY())) {
             pendingMarkerWorldX = lastInteractiveViewport.worldX(event.getMouseX());
@@ -400,7 +550,14 @@ public class TacticalMapHUD implements IGuiOverlay {
     }
 
     private void renderMapArea(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth, int mapHeight,
-                               String title, boolean allowMouseDrag) {
+                               String title, boolean allowMouseDrag, float partialTick) {
+        renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
+            title, allowMouseDrag, true, partialTick);
+    }
+
+    private void renderMapArea(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth, int mapHeight,
+                               String title, boolean allowMouseDrag, boolean showInteractionChrome,
+                               float partialTick) {
         if (mapWidth <= 0 || mapHeight <= 0) {
             return;
         }
@@ -416,24 +573,27 @@ public class TacticalMapHUD implements IGuiOverlay {
         guiGraphics.fill(mapLeft + mapWidth - 1, mapTop, mapLeft + mapWidth, mapTop + mapHeight, borderColor);
         guiGraphics.fill(mapLeft, mapTop + mapHeight - 1, mapLeft + mapWidth, mapTop + mapHeight, borderColor);
         
-        guiGraphics.drawString(
-            Minecraft.getInstance().font,
-            Component.literal(title),
-            mapLeft + 5,
-            mapTop + 5,
-            0xFFFFFF,
-            false
-        );
+        if (showInteractionChrome && title != null && !title.isBlank()) {
+            guiGraphics.drawString(
+                Minecraft.getInstance().font,
+                Component.literal(title),
+                mapLeft + 5,
+                mapTop + 5,
+                0xFFFFFF,
+                false
+            );
+        }
 
-        if (allowMouseDrag) {
+        if (allowMouseDrag && showInteractionChrome) {
             renderRecenterButton(guiGraphics, mapLeft, mapTop, mapWidth);
         } else {
             clearRecenterButton();
         }
         
         // 渲染鸟瞰图，包含玩家位置
-        renderBirdsEyeView(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight, allowMouseDrag);
-        if (allowMouseDrag) {
+        renderBirdsEyeView(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
+            allowMouseDrag, showInteractionChrome, partialTick);
+        if (allowMouseDrag && showInteractionChrome && !artillerySelectionMode) {
             renderMarkerMenu(guiGraphics);
         }
     }
@@ -445,7 +605,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         Minecraft minecraft = Minecraft.getInstance();
         double mouseX = getGuiMouseX(minecraft);
         double mouseY = getGuiMouseY(minecraft);
-        TacticalMarkerType[] types = TacticalMarkerType.values();
+        TacticalMarkerType[] types = TacticalMarkerType.selectableValues();
         int menuHeight = MARKER_MENU_HEADER_HEIGHT + types.length * MARKER_MENU_ROW_HEIGHT + 4;
         guiGraphics.fill(markerMenuX, markerMenuY, markerMenuX + MARKER_MENU_WIDTH,
             markerMenuY + menuHeight, 0xF0181820);
@@ -469,7 +629,7 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     private void openMarkerMenu(int clickX, int clickY) {
         int menuHeight = MARKER_MENU_HEADER_HEIGHT
-            + TacticalMarkerType.values().length * MARKER_MENU_ROW_HEIGHT + 4;
+            + TacticalMarkerType.selectableValues().length * MARKER_MENU_ROW_HEIGHT + 4;
         int minX = lastEmbeddedMapLeft + 2;
         int maxX = lastEmbeddedMapLeft + lastEmbeddedMapWidth - MARKER_MENU_WIDTH - 2;
         int minY = lastEmbeddedMapTop + 2;
@@ -493,7 +653,7 @@ public class TacticalMapHUD implements IGuiOverlay {
             return null;
         }
         int index = relativeY / MARKER_MENU_ROW_HEIGHT;
-        TacticalMarkerType[] values = TacticalMarkerType.values();
+        TacticalMarkerType[] values = TacticalMarkerType.selectableValues();
         return index >= 0 && index < values.length ? values[index] : null;
     }
 
@@ -511,8 +671,8 @@ public class TacticalMapHUD implements IGuiOverlay {
                     || !lastInteractiveViewport.containsWorld(marker.x(), marker.z())) {
                 continue;
             }
-            double dx = mouseX - lastInteractiveViewport.screenX(marker.x());
-            double dy = mouseY - lastInteractiveViewport.screenY(marker.z());
+            double dx = mouseX - lastInteractiveViewport.screenXd(marker.x());
+            double dy = mouseY - lastInteractiveViewport.screenYd(marker.z());
             double distanceSquared = dx * dx + dy * dy;
             if (distanceSquared <= nearestDistanceSquared) {
                 nearest = marker;
@@ -676,7 +836,8 @@ public class TacticalMapHUD implements IGuiOverlay {
      * @param mapWidth 地图宽度
      * @param mapHeight 地图高度
      */
-    private void renderOtherPlayersOnMap(GuiGraphics guiGraphics, LocalPlayer localPlayer, MapViewport viewport) {
+    private void renderOtherPlayersOnMap(GuiGraphics guiGraphics, LocalPlayer localPlayer, MapViewport viewport,
+                                         float partialTick) {
         // 使用配置类检查是否显示玩家位置
         boolean showPlayerLocations = com.example.espoints.config.MapPlayerDisplayConfig.getInstance().isShowPlayerLocations();
         
@@ -715,8 +876,8 @@ public class TacticalMapHUD implements IGuiOverlay {
                 continue;
             }
 
-            int mapPosX = viewport.screenX(otherPlayerX);
-            int mapPosY = viewport.screenY(otherPlayerZ);
+            double mapPosX = viewport.screenXd(otherPlayerX);
+            double mapPosY = viewport.screenYd(otherPlayerZ);
             int teammateColor = EspetroTeamBridge.getMapPlayerColor(pos.getName());
             renderMapPlayerIcon(guiGraphics, mapPosX, mapPosY, otherPlayerYaw,
                 TEAMMATE_MARKER_SIZE, teammateColor);
@@ -739,8 +900,8 @@ public class TacticalMapHUD implements IGuiOverlay {
                         continue;
                     }
 
-                    double otherPlayerX = otherPlayer.getX();
-                    double otherPlayerZ = otherPlayer.getZ();
+                    double otherPlayerX = Mth.lerp(partialTick, otherPlayer.xo, otherPlayer.getX());
+                    double otherPlayerZ = Mth.lerp(partialTick, otherPlayer.zo, otherPlayer.getZ());
                     if (!viewport.containsWorld(otherPlayerX, otherPlayerZ)) {
                         continue;
                     }
@@ -749,10 +910,11 @@ public class TacticalMapHUD implements IGuiOverlay {
                         continue;
                     }
 
-                    int mapPosX = viewport.screenX(otherPlayerX);
-                    int mapPosY = viewport.screenY(otherPlayerZ);
+                    double mapPosX = viewport.screenXd(otherPlayerX);
+                    double mapPosY = viewport.screenYd(otherPlayerZ);
                     int teammateColor = EspetroTeamBridge.getMapPlayerColor(otherPlayer.getName().getString());
-                    renderMapPlayerIcon(guiGraphics, mapPosX, mapPosY, otherPlayer.getYRot(),
+                    renderMapPlayerIcon(guiGraphics, mapPosX, mapPosY,
+                        Mth.rotLerp(partialTick, otherPlayer.yRotO, otherPlayer.getYRot()),
                         TEAMMATE_MARKER_SIZE, teammateColor);
                     considerMarkerHover(mapPosX, mapPosY, TEAMMATE_MARKER_SIZE,
                         otherPlayerX, otherPlayerZ);
@@ -771,7 +933,7 @@ public class TacticalMapHUD implements IGuiOverlay {
      * @param alpha 透明度
      */
     private void renderBirdsEyeView(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth, int mapHeight,
-                                    boolean allowMouseDrag) {
+                                    boolean allowMouseDrag, boolean showInteractionChrome, float partialTick) {
         Minecraft mc = Minecraft.getInstance();
         LocalPlayer player = mc.player;
         if (player == null) return;
@@ -781,10 +943,16 @@ public class TacticalMapHUD implements IGuiOverlay {
         TacticalMapJsonConfig.TacticalMapBounds bounds = config.getBounds();
         ensureVisibleSpan(config, bounds);
 
-        MapViewport content = createViewport(config, bounds, player, mapLeft, mapTop, mapWidth, mapHeight);
+        double playerRenderX = Mth.lerp(partialTick, player.xo, player.getX());
+        double playerRenderZ = Mth.lerp(partialTick, player.zo, player.getZ());
+        float playerRenderYaw = Mth.rotLerp(partialTick, player.yRotO, player.getYRot());
+
+        MapViewport content = createViewport(config, bounds, playerRenderX, playerRenderZ,
+            mapLeft, mapTop, mapWidth, mapHeight, showInteractionChrome ? MAP_TITLE_HEIGHT : 0);
         if (allowMouseDrag) {
             handleMapDrag(content, bounds);
-            content = createViewport(config, bounds, player, mapLeft, mapTop, mapWidth, mapHeight);
+            content = createViewport(config, bounds, playerRenderX, playerRenderZ,
+                mapLeft, mapTop, mapWidth, mapHeight, showInteractionChrome ? MAP_TITLE_HEIGHT : 0);
             lastInteractiveViewport = content;
         } else {
             draggingMap = false;
@@ -792,7 +960,7 @@ public class TacticalMapHUD implements IGuiOverlay {
             lastInteractiveViewport = null;
         }
 
-        beginMarkerHover(allowMouseDrag, content);
+        beginMarkerHover(allowMouseDrag && showInteractionChrome, content);
 
         guiGraphics.enableScissor(content.left, content.top, content.right(), content.bottom());
         renderMapBackground(guiGraphics, content);
@@ -809,24 +977,28 @@ public class TacticalMapHUD implements IGuiOverlay {
         // 渲染己方兵站
         renderBastionsOnMap(guiGraphics, content, player, config.showLabels, localTeam);
 
+        renderVehicleSupplyStationsOnMap(guiGraphics, content, config.showLabels, localTeam);
+
         renderTacticalMarkersOnMap(guiGraphics, content, config.showLabels, localTeam);
 
         // 渲染其他玩家位置
-        renderOtherPlayersOnMap(guiGraphics, player, content);
+        renderOtherPlayersOnMap(guiGraphics, player, content, partialTick);
 
-        if (content.containsWorld(player.getX(), player.getZ())) {
-            renderMapPlayerIcon(guiGraphics, content.screenX(player.getX()), content.screenY(player.getZ()),
-                player.getYRot(), LOCAL_PLAYER_MARKER_SIZE,
+        if (content.containsWorld(playerRenderX, playerRenderZ)) {
+            renderMapPlayerIcon(guiGraphics, content.screenXd(playerRenderX), content.screenYd(playerRenderZ),
+                playerRenderYaw, LOCAL_PLAYER_MARKER_SIZE,
                 EspetroTeamBridge.getMapPlayerColor(player.getName().getString()));
-            considerMarkerHover(content.screenX(player.getX()), content.screenY(player.getZ()),
-                LOCAL_PLAYER_MARKER_SIZE, player.getX(), player.getZ());
+            considerMarkerHover(content.screenXd(playerRenderX), content.screenYd(playerRenderZ),
+                LOCAL_PLAYER_MARKER_SIZE, playerRenderX, playerRenderZ);
         }
 
         renderSelectedDeploymentFrame(guiGraphics, content);
 
         guiGraphics.disableScissor();
         guiGraphics.renderOutline(content.left, content.top, content.width, content.height, 0xCC000000);
-        renderHoveredMarkerCoordinates(guiGraphics, content);
+        if (showInteractionChrome) {
+            renderHoveredMarkerCoordinates(guiGraphics, content);
+        }
     }
 
     private void renderBasesOnMap(GuiGraphics guiGraphics, MapViewport viewport, LocalPlayer player,
@@ -834,8 +1006,6 @@ public class TacticalMapHUD implements IGuiOverlay {
         if (visibleBases.isEmpty()) {
             return;
         }
-
-        int size = BASE_MARKER_SIZE;
 
         for (SyncBastionsMessage.BaseInfo base : visibleBases) {
             if (!isVisibleTeamMarker(localTeam, base.getTeam())) {
@@ -847,8 +1017,9 @@ public class TacticalMapHUD implements IGuiOverlay {
                 continue;
             }
 
-            int mapPosX = viewport.screenX(pos.getX());
-            int mapPosY = viewport.screenY(pos.getZ());
+            double mapPosX = viewport.screenXd(pos.getX());
+            double mapPosY = viewport.screenYd(pos.getZ());
+            int size = Math.round(BASE_MARKER_SIZE * getSelectedDeploymentScale(pos.getX(), pos.getZ()));
             int baseColor = getBastionColor(base.getTeam());
             renderBaseMarker(guiGraphics, mapPosX, mapPosY, size, baseColor, base.getYaw());
             considerMarkerHover(mapPosX, mapPosY, size, pos.getX(), pos.getZ());
@@ -869,8 +1040,6 @@ public class TacticalMapHUD implements IGuiOverlay {
             return;
         }
 
-        int size = BASTION_MARKER_SIZE;
-
         for (SyncBastionsMessage.BastionInfo bastion : visibleBastions) {
             if (!isVisibleTeamMarker(localTeam, bastion.getTeam())) {
                 continue;
@@ -881,8 +1050,9 @@ public class TacticalMapHUD implements IGuiOverlay {
                 continue;
             }
 
-            int mapPosX = viewport.screenX(pos.getX());
-            int mapPosY = viewport.screenY(pos.getZ());
+            double mapPosX = viewport.screenXd(pos.getX());
+            double mapPosY = viewport.screenYd(pos.getZ());
+            int size = Math.round(BASTION_MARKER_SIZE * getSelectedDeploymentScale(pos.getX(), pos.getZ()));
             int bastionColor = getBastionColor(bastion.getTeam());
             renderBastionMarker(guiGraphics, mapPosX, mapPosY, size, bastionColor);
             considerMarkerHover(mapPosX, mapPosY, size, pos.getX(), pos.getZ());
@@ -897,45 +1067,134 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
     }
 
-    private void renderBastionMarker(GuiGraphics guiGraphics, int x, int y, int size, int color) {
-        int half = Math.max(3, size / 2);
-        int arm = Math.max(1, size / 5);
-        guiGraphics.fill(x - arm, y - half, x + arm + 1, y - arm, color);
-        guiGraphics.fill(x - half, y - arm, x + half + 1, y + arm + 1, color);
-        guiGraphics.fill(x - arm, y + arm, x + arm + 1, y + half + 1, color);
-        guiGraphics.fill(x - half + 1, y - half + 1, x + half, y + half, 0xCC101010);
-        guiGraphics.fill(x - arm, y - arm, x + arm + 1, y + arm + 1, color);
+    private void renderVehicleSupplyStationsOnMap(GuiGraphics guiGraphics, MapViewport viewport,
+                                                  boolean showLabels, String localTeam) {
+        if (visibleVehicleSupplyStations.isEmpty()) {
+            return;
+        }
+
+        for (SyncBastionsMessage.VehicleSupplyStationInfo station : visibleVehicleSupplyStations) {
+            if (!isVisibleTeamMarker(localTeam, station.getTeam())) {
+                continue;
+            }
+
+            BlockPos pos = station.getPos();
+            if (!viewport.containsWorld(pos.getX(), pos.getZ())) {
+                continue;
+            }
+
+            double mapPosX = viewport.screenXd(pos.getX());
+            double mapPosY = viewport.screenYd(pos.getZ());
+            int size = Math.round(VEHICLE_SUPPLY_STATION_MARKER_SIZE
+                * getSelectedDeploymentScale(pos.getX(), pos.getZ()));
+            int color = getVehicleSupplyStationColor(station.getTeam());
+            renderVehicleSupplyStationMarker(guiGraphics, mapPosX, mapPosY, size, color);
+            considerMarkerHover(mapPosX, mapPosY, size, pos.getX(), pos.getZ());
+
+            if (!showLabels) {
+                continue;
+            }
+
+            String name = station.getName() == null || station.getName().isEmpty()
+                ? "载具补给站"
+                : station.getName();
+            renderMapLabel(guiGraphics, name, mapPosX, mapPosY, size + 4, -size / 2, 0xFFFFFF);
+        }
     }
 
-    private void renderBaseMarker(GuiGraphics guiGraphics, int x, int y, int size, int color, float yaw) {
-        int half = Math.max(5, size / 2);
+    private void renderBastionMarker(GuiGraphics guiGraphics, double x, double y, int size, int color) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            renderBastionMarkerAtOrigin(guiGraphics, size, color);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
+    }
+
+    private void renderBastionMarkerAtOrigin(GuiGraphics guiGraphics, int size, int color) {
+        int half = Math.max(2, size / 2);
+        int arm = Math.max(1, size / 5);
+        guiGraphics.fill(-arm, -half, arm + 1, -arm, color);
+        guiGraphics.fill(-half, -arm, half + 1, arm + 1, color);
+        guiGraphics.fill(-arm, arm, arm + 1, half + 1, color);
+        guiGraphics.fill(-half + 1, -half + 1, half, half, 0xCC101010);
+        guiGraphics.fill(-arm, -arm, arm + 1, arm + 1, color);
+    }
+
+    private void renderVehicleSupplyStationMarker(GuiGraphics guiGraphics, double x, double y, int size, int color) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            int half = Math.max(3, size / 2);
+            int inner = Math.max(2, half - 2);
+            guiGraphics.fill(-half, -half + 1, half + 1, half, 0xDD101010);
+            guiGraphics.fill(-half + 1, -half, half, half + 1, 0xDD101010);
+            guiGraphics.fill(-inner, -inner + 1, inner + 1, inner, color);
+            guiGraphics.fill(-inner + 1, -inner, inner, inner + 1, color);
+            int stem = Math.max(1, size / 6);
+            guiGraphics.fill(-stem, -half - 2, stem + 1, half + 3, color);
+            guiGraphics.fill(-half - 2, -stem, half + 3, stem + 1, color);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
+    }
+
+    private void renderBaseMarker(GuiGraphics guiGraphics, double x, double y, int size, int color, float yaw) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            renderBaseMarkerAtOrigin(guiGraphics, size, color, yaw);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
+    }
+
+    private void renderBaseMarkerAtOrigin(GuiGraphics guiGraphics, int size, int color, float yaw) {
+        int half = Math.max(4, size / 2);
         int inner = Math.max(2, half / 2);
-        guiGraphics.fill(x - half, y - half, x + half + 1, y + half + 1, 0xDD101010);
-        guiGraphics.fill(x - half + 1, y - half + 1, x + half, y + half, color);
-        guiGraphics.fill(x - inner, y - inner, x + inner + 1, y + inner + 1, 0xEE101010);
+        guiGraphics.fill(-half, -half, half + 1, half + 1, 0xDD101010);
+        guiGraphics.fill(-half + 1, -half + 1, half, half, color);
+        guiGraphics.fill(-inner, -inner, inner + 1, inner + 1, 0xEE101010);
 
         double radians = Math.toRadians(yaw);
-        int tipX = x - (int) Math.round(Math.sin(radians) * half);
-        int tipY = y + (int) Math.round(Math.cos(radians) * half);
+        int tipX = -(int) Math.round(Math.sin(radians) * half);
+        int tipY = (int) Math.round(Math.cos(radians) * half);
         int pointerHalf = Math.max(1, size / 8);
         guiGraphics.fill(tipX - pointerHalf, tipY - pointerHalf, tipX + pointerHalf + 1, tipY + pointerHalf + 1, 0xFFFFFFFF);
     }
 
-    private void renderPointMarker(GuiGraphics guiGraphics, int x, int y, int size, int color) {
-        int half = Math.max(2, size / 2);
-        guiGraphics.fill(x - half, y - half, x + half + 1, y + half + 1, 0xDD101010);
-        guiGraphics.fill(x - half + 1, y - half + 1, x + half, y + half, color);
+    private void renderPointMarker(GuiGraphics guiGraphics, double x, double y, int size, int color) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            renderPointMarkerAtOrigin(guiGraphics, size, color);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
     }
 
-    private void renderMapLabel(GuiGraphics guiGraphics, String text, int x, int y, int offsetX, int offsetY, int color) {
-        guiGraphics.drawString(
-            Minecraft.getInstance().font,
-            text,
-            x + offsetX,
-            y + offsetY,
-            color,
-            false
-        );
+    private void renderPointMarkerAtOrigin(GuiGraphics guiGraphics, int size, int color) {
+        int half = Math.max(1, size / 2);
+        guiGraphics.fill(-half, -half, half + 1, half + 1, 0xDD101010);
+        guiGraphics.fill(-half + 1, -half + 1, half, half, color);
+    }
+
+    private void renderMapLabel(GuiGraphics guiGraphics, String text, double x, double y, int offsetX, int offsetY, int color) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x + offsetX, y + offsetY, 0.0D);
+        try {
+            guiGraphics.drawString(
+                Minecraft.getInstance().font,
+                text,
+                0,
+                0,
+                color,
+                false
+            );
+        } finally {
+            guiGraphics.pose().popPose();
+        }
     }
 
     private int getBastionColor(String team) {
@@ -946,6 +1205,16 @@ public class TacticalMapHUD implements IGuiOverlay {
             return 0xFF5599FF;
         }
         return 0xFF55FFFF;
+    }
+
+    private int getVehicleSupplyStationColor(String team) {
+        if ("ATTACK".equalsIgnoreCase(team)) {
+            return 0xFFFFAA33;
+        }
+        if ("DEFEND".equalsIgnoreCase(team)) {
+            return 0xFF66CCFF;
+        }
+        return 0xFFFFFF55;
     }
 
     private void renderTacticalMarkersOnMap(GuiGraphics guiGraphics, MapViewport viewport,
@@ -961,8 +1230,8 @@ public class TacticalMapHUD implements IGuiOverlay {
             if (!viewport.containsWorld(marker.x(), marker.z())) {
                 continue;
             }
-            int mapX = viewport.screenX(marker.x());
-            int mapY = viewport.screenY(marker.z());
+            double mapX = viewport.screenXd(marker.x());
+            double mapY = viewport.screenYd(marker.z());
             int fadedColor = withOpacity(marker.type().getColor(), opacity);
             renderTacticalMarkerIcon(guiGraphics, mapX, mapY, marker.type(), fadedColor);
             considerMarkerHover(mapX, mapY, TACTICAL_MARKER_SIZE, marker.x(), marker.z());
@@ -1013,8 +1282,8 @@ public class TacticalMapHUD implements IGuiOverlay {
             double pointCenterX = (point.getPos1().getX() + point.getPos2().getX()) / 2.0;
             double pointCenterZ = (point.getPos1().getZ() + point.getPos2().getZ()) / 2.0;
 
-            int mapPosX = viewport.screenX(pointCenterX);
-            int mapPosY = viewport.screenY(pointCenterZ);
+            double mapPosX = viewport.screenXd(pointCenterX);
+            double mapPosY = viewport.screenYd(pointCenterZ);
             // 根据据点状态获取颜色
             int pointColor = getStatusColor(point);
             
@@ -1028,14 +1297,8 @@ public class TacticalMapHUD implements IGuiOverlay {
             }
 
             // 渲染据点名称
-            guiGraphics.drawString(
-                Minecraft.getInstance().font,
-                point.getName(),
-                mapPosX + labelOffset,
-                mapPosY - 6,
-                0xFFFFFF,
-                false
-            );
+            renderMapLabel(guiGraphics, point.getName(), mapPosX, mapPosY,
+                labelOffset, -6, 0xFFFFFF);
             
             // 渲染据点边界，传入网格边界参数，确保据点范围限制在网格内
             renderPointBoundary(guiGraphics, point, viewport);
@@ -1046,13 +1309,11 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     private void renderBatchRoutes(GuiGraphics guiGraphics, MapViewport viewport) {
         CapturePoint previous = null;
-        int routeIndexInBatch = 0;
         for (CapturePoint point : allPoints) {
             if (previous != null) {
                 boolean newBatch = previous.getBatch() != point.getBatch();
-                int color = ROUTE_COLORS[(newBatch ? 0 : routeIndexInBatch) % ROUTE_COLORS.length];
+                int color = newBatch ? ROUTE_COLORS[0] : SAME_BATCH_ROUTE_COLOR;
                 drawRouteLine(guiGraphics, previous, point, color, viewport);
-                routeIndexInBatch = newBatch ? 0 : routeIndexInBatch + 1;
             }
             previous = point;
         }
@@ -1064,11 +1325,8 @@ public class TacticalMapHUD implements IGuiOverlay {
         double fromZ = (from.getPos1().getZ() + from.getPos2().getZ()) / 2.0D;
         double toX = (to.getPos1().getX() + to.getPos2().getX()) / 2.0D;
         double toZ = (to.getPos1().getZ() + to.getPos2().getZ()) / 2.0D;
-        if (!viewport.containsWorld(fromX, fromZ) || !viewport.containsWorld(toX, toZ)) {
-            return;
-        }
-        drawClippedLine(guiGraphics, viewport.screenX(fromX), viewport.screenY(fromZ),
-            viewport.screenX(toX), viewport.screenY(toZ), color, viewport);
+        drawClippedLine(guiGraphics, viewport.screenXd(fromX), viewport.screenYd(fromZ),
+            viewport.screenXd(toX), viewport.screenYd(toZ), color, viewport);
     }
     
     /**
@@ -1130,12 +1388,15 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     private MapViewport createViewport(TacticalMapJsonConfig config,
                                        TacticalMapJsonConfig.TacticalMapBounds bounds,
-                                       LocalPlayer player,
+                                       double playerX,
+                                       double playerZ,
                                        int mapLeft,
                                        int mapTop,
                                        int mapWidth,
-                                       int mapHeight) {
-        int availableHeight = Math.max(1, mapHeight - MAP_TITLE_HEIGHT);
+                                       int mapHeight,
+                                       int titleHeight) {
+        int safeTitleHeight = Mth.clamp(titleHeight, 0, Math.max(0, mapHeight - 1));
+        int availableHeight = Math.max(1, mapHeight - safeTitleHeight);
         double displayAspectRatio = getMapDisplayAspectRatio(bounds);
         int width = Math.max(1, mapWidth);
         int height = Math.max(1, (int) Math.round(width / displayAspectRatio));
@@ -1144,7 +1405,7 @@ public class TacticalMapHUD implements IGuiOverlay {
             width = Math.max(1, (int) Math.round(height * displayAspectRatio));
         }
         int left = mapLeft + (mapWidth - width) / 2;
-        int top = mapTop + MAP_TITLE_HEIGHT + (availableHeight - height) / 2;
+        int top = mapTop + safeTitleHeight + (availableHeight - height) / 2;
 
         ensureVisibleSpan(config, bounds);
         double[] span = getViewportSpan(bounds);
@@ -1154,7 +1415,7 @@ public class TacticalMapHUD implements IGuiOverlay {
             centerX = draggedCenterX;
             centerZ = draggedCenterZ;
         } else {
-            double[] autoCenter = chooseAutoViewportCenter(player, bounds, span[0], span[1]);
+            double[] autoCenter = chooseAutoViewportCenter(playerX, playerZ, bounds, span[0], span[1]);
             centerX = autoCenter[0];
             centerZ = autoCenter[1];
         }
@@ -1173,11 +1434,12 @@ public class TacticalMapHUD implements IGuiOverlay {
         return configuredBounds;
     }
 
-    private double[] chooseAutoViewportCenter(LocalPlayer player,
+    private double[] chooseAutoViewportCenter(double playerX,
+                                             double playerZ,
                                              TacticalMapJsonConfig.TacticalMapBounds bounds,
                                              double spanX,
                                              double spanZ) {
-        double[] playerCenter = clampViewportCenter(player.getX(), player.getZ(), visibleWorldSpan, bounds);
+        double[] playerCenter = clampViewportCenter(playerX, playerZ, visibleWorldSpan, bounds);
         return playerCenter;
     }
 
@@ -1486,6 +1748,13 @@ public class TacticalMapHUD implements IGuiOverlay {
     }
 
     private BackgroundImageSource openBackgroundImage(String imagePath) throws IOException {
+        if (syncedBackgroundImageBytes != null && imagePath.equals(syncedBackgroundImagePath)) {
+            return new BackgroundImageSource(
+                "synced:" + syncedBackgroundImageKey,
+                () -> new ByteArrayInputStream(syncedBackgroundImageBytes)
+            );
+        }
+
         ResourceLocation resourceLocation = parseBackgroundResourceLocation(imagePath);
         if (resourceLocation != null) {
             Optional<Resource> resource = Minecraft.getInstance().getResourceManager().getResource(resourceLocation);
@@ -1576,7 +1845,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         return step;
     }
 
-    private void renderMapPlayerIcon(GuiGraphics guiGraphics, int centerX, int centerY,
+    private void renderMapPlayerIcon(GuiGraphics guiGraphics, double centerX, double centerY,
                                      float yaw, int size, int color) {
         MapDecoration.Type type = MapDecoration.Type.PLAYER;
         int icon = type.getIcon();
@@ -1603,62 +1872,82 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
     }
 
-    private void renderTacticalMarkerIcon(GuiGraphics guiGraphics, int x, int y,
+    private void renderTacticalMarkerIcon(GuiGraphics guiGraphics, double x, double y,
                                           TacticalMarkerType type) {
         renderTacticalMarkerIcon(guiGraphics, x, y, type, type.getColor());
     }
 
-    private void renderTacticalMarkerIcon(GuiGraphics guiGraphics, int x, int y,
+    private void renderTacticalMarkerIcon(GuiGraphics guiGraphics, double x, double y,
                                           TacticalMarkerType type, int color) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            renderTacticalMarkerIconAtOrigin(guiGraphics, type, color);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
+    }
+
+    private void renderTacticalMarkerIconAtOrigin(GuiGraphics guiGraphics,
+                                                  TacticalMarkerType type, int color) {
         switch (type) {
             case ENEMY_INFANTRY -> {
-                guiGraphics.fill(x - 1, y - 3, x + 2, y, color);
-                guiGraphics.fill(x, y, x + 1, y + 4, color);
-                guiGraphics.fill(x - 3, y + 1, x + 4, y + 2, color);
+                guiGraphics.fill(-1, -3, 2, 0, color);
+                guiGraphics.fill(0, 0, 1, 4, color);
+                guiGraphics.fill(-3, 1, 4, 2, color);
             }
             case ENEMY_TANK -> {
-                guiGraphics.renderOutline(x - 4, y - 2, 8, 5, color);
-                guiGraphics.fill(x - 1, y - 4, x + 2, y - 1, color);
-                guiGraphics.fill(x + 1, y - 3, x + 5, y - 2, color);
+                guiGraphics.renderOutline(-4, -2, 8, 5, color);
+                guiGraphics.fill(-1, -4, 2, -1, color);
+                guiGraphics.fill(1, -3, 5, -2, color);
             }
             case ENEMY_IFV -> {
-                guiGraphics.renderOutline(x - 4, y - 3, 8, 6, color);
-                guiGraphics.fill(x - 2, y - 1, x + 3, y + 1, color);
-                guiGraphics.fill(x - 3, y + 3, x - 1, y + 4, color);
-                guiGraphics.fill(x + 1, y + 3, x + 3, y + 4, color);
+                guiGraphics.renderOutline(-4, -3, 8, 6, color);
+                guiGraphics.fill(-2, -1, 3, 1, color);
+                guiGraphics.fill(-3, 3, -1, 4, color);
+                guiGraphics.fill(1, 3, 3, 4, color);
             }
             case ENEMY_LIGHT_VEHICLE -> {
-                drawLine(guiGraphics, x - 4, y - 2, x, y + 3, color);
-                drawLine(guiGraphics, x, y + 3, x + 4, y - 2, color);
-                guiGraphics.fill(x - 2, y - 3, x + 3, y - 2, color);
+                drawLine(guiGraphics, -4, -2, 0, 3, color);
+                drawLine(guiGraphics, 0, 3, 4, -2, color);
+                guiGraphics.fill(-2, -3, 3, -2, color);
             }
             case ENEMY_HELICOPTER -> {
-                guiGraphics.fill(x - 5, y - 1, x + 6, y + 1, color);
-                guiGraphics.fill(x - 1, y - 4, x + 1, y + 4, color);
-                drawLine(guiGraphics, x - 3, y - 3, x + 3, y + 3, color);
-                drawLine(guiGraphics, x - 3, y + 3, x + 3, y - 3, color);
+                guiGraphics.fill(-5, -1, 6, 1, color);
+                guiGraphics.fill(-1, -4, 1, 4, color);
+                drawLine(guiGraphics, -3, -3, 3, 3, color);
+                drawLine(guiGraphics, -3, 3, 3, -3, color);
             }
             case ATTACK_HERE -> {
-                drawLine(guiGraphics, x - 4, y + 3, x, y - 3, color);
-                drawLine(guiGraphics, x, y - 3, x + 4, y + 3, color);
-                drawLine(guiGraphics, x - 3, y + 4, x, y, color);
-                drawLine(guiGraphics, x, y, x + 3, y + 4, color);
+                drawLine(guiGraphics, -4, 3, 0, -3, color);
+                drawLine(guiGraphics, 0, -3, 4, 3, color);
+                drawLine(guiGraphics, -3, 4, 0, 0, color);
+                drawLine(guiGraphics, 0, 0, 3, 4, color);
             }
             case DEFEND_HERE -> {
-                drawLine(guiGraphics, x - 4, y - 3, x + 4, y - 3, color);
-                drawLine(guiGraphics, x - 4, y - 3, x - 3, y + 2, color);
-                drawLine(guiGraphics, x + 4, y - 3, x + 3, y + 2, color);
-                drawLine(guiGraphics, x - 3, y + 2, x, y + 4, color);
-                drawLine(guiGraphics, x + 3, y + 2, x, y + 4, color);
+                drawLine(guiGraphics, -4, -3, 4, -3, color);
+                drawLine(guiGraphics, -4, -3, -3, 2, color);
+                drawLine(guiGraphics, 4, -3, 3, 2, color);
+                drawLine(guiGraphics, -3, 2, 0, 4, color);
+                drawLine(guiGraphics, 3, 2, 0, 4, color);
+            }
+            case ARTILLERY_TARGET -> {
+                guiGraphics.renderOutline(-4, -4, 8, 8, color);
+                guiGraphics.fill(-1, -1, 2, 2, color);
+                drawLine(guiGraphics, 0, -6, 0, -3, color);
+                drawLine(guiGraphics, 0, 3, 0, 6, color);
+                drawLine(guiGraphics, -6, 0, -3, 0, color);
+                drawLine(guiGraphics, 3, 0, 6, 0, color);
             }
         }
     }
 
-    private void drawClippedLine(GuiGraphics guiGraphics, int x1, int y1, int x2, int y2, int color, MapViewport viewport) {
-        int minX = viewport.left;
-        int minY = viewport.top;
-        int maxX = viewport.right() - 1;
-        int maxY = viewport.bottom() - 1;
+    private void drawClippedLine(GuiGraphics guiGraphics, double x1, double y1, double x2, double y2,
+                                 int color, MapViewport viewport) {
+        double minX = viewport.left;
+        double minY = viewport.top;
+        double maxX = viewport.right() - 1;
+        double maxY = viewport.bottom() - 1;
 
         int out1 = computeOutCode(x1, y1, minX, minY, maxX, maxY);
         int out2 = computeOutCode(x2, y2, minX, minY, maxX, maxY);
@@ -1666,7 +1955,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         int guard = 0;
         while (guard++ < 8) {
             if ((out1 | out2) == 0) {
-                drawLine(guiGraphics, x1, y1, x2, y2, color);
+                drawSmoothLine(guiGraphics, x1, y1, x2, y2, color);
                 return;
             }
             if ((out1 & out2) != 0) {
@@ -1674,32 +1963,32 @@ public class TacticalMapHUD implements IGuiOverlay {
             }
 
             int out = out1 != 0 ? out1 : out2;
-            int x = 0;
-            int y = 0;
+            double x = 0.0D;
+            double y = 0.0D;
 
             if ((out & 8) != 0) {
                 if (y2 == y1) {
                     return;
                 }
-                x = (int) Math.round(x1 + (x2 - x1) * (maxY - y1) / (double) (y2 - y1));
+                x = x1 + (x2 - x1) * (maxY - y1) / (y2 - y1);
                 y = maxY;
             } else if ((out & 4) != 0) {
                 if (y2 == y1) {
                     return;
                 }
-                x = (int) Math.round(x1 + (x2 - x1) * (minY - y1) / (double) (y2 - y1));
+                x = x1 + (x2 - x1) * (minY - y1) / (y2 - y1);
                 y = minY;
             } else if ((out & 2) != 0) {
                 if (x2 == x1) {
                     return;
                 }
-                y = (int) Math.round(y1 + (y2 - y1) * (maxX - x1) / (double) (x2 - x1));
+                y = y1 + (y2 - y1) * (maxX - x1) / (x2 - x1);
                 x = maxX;
             } else if ((out & 1) != 0) {
                 if (x2 == x1) {
                     return;
                 }
-                y = (int) Math.round(y1 + (y2 - y1) * (minX - x1) / (double) (x2 - x1));
+                y = y1 + (y2 - y1) * (minX - x1) / (x2 - x1);
                 x = minX;
             }
 
@@ -1715,7 +2004,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
     }
 
-    private int computeOutCode(int x, int y, int minX, int minY, int maxX, int maxY) {
+    private int computeOutCode(double x, double y, double minX, double minY, double maxX, double maxY) {
         int code = 0;
         if (x < minX) {
             code |= 1;
@@ -1728,6 +2017,27 @@ public class TacticalMapHUD implements IGuiOverlay {
             code |= 8;
         }
         return code;
+    }
+
+    private void drawSmoothLine(GuiGraphics guiGraphics, double x1, double y1, double x2, double y2, int color) {
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+        double length = Math.hypot(dx, dy);
+        if (length < 0.5D) {
+            int x = (int) Math.round(x1);
+            int y = (int) Math.round(y1);
+            guiGraphics.fill(x, y, x + 1, y + 1, color);
+            return;
+        }
+
+        guiGraphics.pose().pushPose();
+        try {
+            guiGraphics.pose().translate(x1, y1, 0.0D);
+            guiGraphics.pose().mulPose(Axis.ZP.rotation((float) Math.atan2(dy, dx)));
+            guiGraphics.fill(0, 0, Math.max(1, (int) Math.ceil(length)), 1, color);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
     }
 
     private void resetVisibleSpan(TacticalMapJsonConfig config) {
@@ -1779,7 +2089,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         markerHoverEnabled = viewport.containsScreen(markerHoverMouseX, markerHoverMouseY);
     }
 
-    private void considerMarkerHover(int screenX, int screenY, int markerSize,
+    private void considerMarkerHover(double screenX, double screenY, int markerSize,
                                      double worldX, double worldZ) {
         if (!markerHoverEnabled) {
             return;
@@ -1826,15 +2136,46 @@ public class TacticalMapHUD implements IGuiOverlay {
             return;
         }
 
-        int x = viewport.screenX(selectedDeploymentX);
-        int y = viewport.screenY(selectedDeploymentZ);
-        int half = SELECTED_DEPLOYMENT_FRAME_SIZE / 2;
-        guiGraphics.renderOutline(x - half, y - half,
-            SELECTED_DEPLOYMENT_FRAME_SIZE, SELECTED_DEPLOYMENT_FRAME_SIZE, 0xFFFFFFFF);
-        guiGraphics.renderOutline(x - half + 1, y - half + 1,
-            SELECTED_DEPLOYMENT_FRAME_SIZE - 2, SELECTED_DEPLOYMENT_FRAME_SIZE - 2, 0xFFFFFFFF);
-        considerMarkerHover(x, y, SELECTED_DEPLOYMENT_FRAME_SIZE,
+        double x = viewport.screenXd(selectedDeploymentX);
+        double y = viewport.screenYd(selectedDeploymentZ);
+        float progress = getSelectedDeploymentAnimationProgress();
+        int frameSize = Math.round(Mth.lerp(progress,
+            (float) SELECTED_DEPLOYMENT_FRAME_SIZE,
+            (float) SELECTED_DEPLOYMENT_FRAME_MAX_SIZE));
+        int half = frameSize / 2;
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            guiGraphics.renderOutline(-half, -half, frameSize, frameSize, 0xFFFFFFFF);
+            guiGraphics.renderOutline(-half + 1, -half + 1, frameSize - 2, frameSize - 2, 0xFFFFFFFF);
+        } finally {
+            guiGraphics.pose().popPose();
+        }
+        considerMarkerHover(x, y, frameSize,
             selectedDeploymentX, selectedDeploymentZ);
+    }
+
+    private float getSelectedDeploymentScale(double worldX, double worldZ) {
+        if (!hasSelectedDeploymentPoint) {
+            return 1.0F;
+        }
+
+        double dx = worldX - selectedDeploymentX;
+        double dz = worldZ - selectedDeploymentZ;
+        if (dx * dx + dz * dz > SELECTED_DEPLOYMENT_MATCH_DISTANCE_SQUARED) {
+            return 1.0F;
+        }
+
+        return 1.0F + 0.35F * getSelectedDeploymentAnimationProgress();
+    }
+
+    private float getSelectedDeploymentAnimationProgress() {
+        long now = System.currentTimeMillis();
+        float progress = selectedDeploymentAnimationStartedAt <= 0L
+            ? 1.0F
+            : Mth.clamp((now - selectedDeploymentAnimationStartedAt)
+                / (float) SELECTED_DEPLOYMENT_ANIMATION_MS, 0.0F, 1.0F);
+        return progress * progress * (3.0F - 2.0F * progress);
     }
 
     private static final class HoveredMapMarker {
@@ -1894,9 +2235,10 @@ public class TacticalMapHUD implements IGuiOverlay {
             double progress = interpolationDurationMs <= 0L
                 ? 1.0D
                 : Mth.clamp((now - interpolationStartedAt) / (double) interpolationDurationMs, 0.0D, 1.0D);
-            renderX = Mth.lerp(progress, fromX, targetX);
-            renderZ = Mth.lerp(progress, fromZ, targetZ);
-            renderYaw = fromYaw + (float) progress * Mth.wrapDegrees(targetYaw - fromYaw);
+            double easedProgress = progress * progress * (3.0D - 2.0D * progress);
+            renderX = Mth.lerp(easedProgress, fromX, targetX);
+            renderZ = Mth.lerp(easedProgress, fromZ, targetZ);
+            renderYaw = fromYaw + (float) easedProgress * Mth.wrapDegrees(targetYaw - fromYaw);
         }
 
         private void snapTo(
@@ -1975,11 +2317,19 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
 
         private int screenX(double worldX) {
-            return left + (int) Math.round((worldX - viewMinX) * scaleX);
+            return (int) Math.round(screenXd(worldX));
         }
 
         private int screenY(double worldZ) {
-            return top + (int) Math.round((worldZ - viewMinZ) * scaleZ);
+            return (int) Math.round(screenYd(worldZ));
+        }
+
+        private double screenXd(double worldX) {
+            return left + (worldX - viewMinX) * scaleX;
+        }
+
+        private double screenYd(double worldZ) {
+            return top + (worldZ - viewMinZ) * scaleZ;
         }
 
         private double worldX(double screenX) {

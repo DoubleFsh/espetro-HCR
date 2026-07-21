@@ -34,6 +34,20 @@ description='''AI-Generated Mod: A mod that enables attack and defense in Minecr
     side="BOTH"
 
 [[dependencies.espoints]]
+    modId="oelib"
+    mandatory=true
+    versionRange="[0.2.4,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.espoints]]
+    modId="auratip"
+    mandatory=true
+    versionRange="[1.1.1-beta,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.espoints]]
     modId="espetro"
     mandatory=true
     versionRange="[1.0.6-final,)"

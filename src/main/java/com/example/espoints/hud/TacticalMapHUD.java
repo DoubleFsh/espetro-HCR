@@ -60,14 +60,22 @@ import java.util.UUID;
 public class TacticalMapHUD implements IGuiOverlay {
     private static final double ZOOM_FACTOR = 1.25D;
     private static final int MAP_TITLE_HEIGHT = 20;
+    private static final int EMBEDDED_MAP_TITLE_HEIGHT = 14;
+    private static final float EMBEDDED_TEXT_SCALE = 0.68F;
     private static final ResourceLocation VANILLA_MAP_ICONS =
         ResourceLocation.withDefaultNamespace("textures/map/map_icons.png");
+    private static final ResourceLocation SQUAD_HAB_ICON =
+        ResourceLocation.fromNamespaceAndPath(ESPointsMod.MOD_ID, "textures/gui/squad/hab.png");
+    private static final ResourceLocation SQUAD_RADIO_ICON =
+        ResourceLocation.fromNamespaceAndPath(ESPointsMod.MOD_ID, "textures/gui/squad/radio.png");
+    private static final ResourceLocation SQUAD_RALLY_ICON =
+        ResourceLocation.fromNamespaceAndPath(ESPointsMod.MOD_ID, "textures/gui/squad/rally.png");
     private static final int MAP_BACKGROUND_FALLBACK_COLOR = 0xAA1D211B;
     // 所有地图标志使用最大显示范围时的固定像素尺寸，不再随缩放变化。
     private static final int LOCAL_PLAYER_MARKER_SIZE = 7;
     private static final int TEAMMATE_MARKER_SIZE = 6;
     private static final int CAPTURE_POINT_MARKER_SIZE = 3;
-    private static final int BASTION_MARKER_SIZE = 5;
+    private static final int BASTION_MARKER_SIZE = 12;
     private static final int VEHICLE_SUPPLY_STATION_MARKER_SIZE = 6;
     private static final int BASE_MARKER_SIZE = 7;
     private static final int TACTICAL_MARKER_SIZE = 7;
@@ -135,6 +143,7 @@ public class TacticalMapHUD implements IGuiOverlay {
     private int lastEmbeddedMapHeight;
     private Object lastEmbeddedMapScreen;
     private long lastEmbeddedMapRenderMs;
+    private boolean compactEmbeddedRendering;
     private int lastRecenterButtonLeft = Integer.MIN_VALUE;
     private int lastRecenterButtonTop = Integer.MIN_VALUE;
     private int lastRecenterButtonWidth;
@@ -391,8 +400,13 @@ public class TacticalMapHUD implements IGuiOverlay {
         lastEmbeddedMapHeight = mapHeight;
         lastEmbeddedMapScreen = currentScreen;
         lastEmbeddedMapRenderMs = System.currentTimeMillis();
-        renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
-            "战术地图 " + getRangeText() + " 鼠标滚轮缩放", true, partialTick);
+        compactEmbeddedRendering = true;
+        try {
+            renderMapArea(guiGraphics, mapLeft, mapTop, mapWidth, mapHeight,
+                "战术地图 " + getRangeText() + " 鼠标滚轮缩放", true, partialTick);
+        } finally {
+            compactEmbeddedRendering = false;
+        }
     }
 
     public void beginArtillerySelection() {
@@ -574,14 +588,8 @@ public class TacticalMapHUD implements IGuiOverlay {
         guiGraphics.fill(mapLeft, mapTop + mapHeight - 1, mapLeft + mapWidth, mapTop + mapHeight, borderColor);
         
         if (showInteractionChrome && title != null && !title.isBlank()) {
-            guiGraphics.drawString(
-                Minecraft.getInstance().font,
-                Component.literal(title),
-                mapLeft + 5,
-                mapTop + 5,
-                0xFFFFFF,
-                false
-            );
+            drawMapText(guiGraphics, title, mapLeft + 4,
+                mapTop + (compactEmbeddedRendering ? 3 : 5), 0xFFFFFF);
         }
 
         if (allowMouseDrag && showInteractionChrome) {
@@ -684,10 +692,14 @@ public class TacticalMapHUD implements IGuiOverlay {
 
     private void renderRecenterButton(GuiGraphics guiGraphics, int mapLeft, int mapTop, int mapWidth) {
         String label = "归中";
-        int buttonWidth = Math.max(34, Minecraft.getInstance().font.width(label) + 12);
-        int buttonHeight = 14;
-        int buttonLeft = mapLeft + mapWidth - buttonWidth - 6;
-        int buttonTop = mapTop + 4;
+        float textScale = getMapTextScale();
+        int labelWidth = Math.round(Minecraft.getInstance().font.width(label) * textScale);
+        int buttonWidth = compactEmbeddedRendering
+            ? Math.max(25, labelWidth + 7)
+            : Math.max(34, labelWidth + 12);
+        int buttonHeight = compactEmbeddedRendering ? 10 : 14;
+        int buttonLeft = mapLeft + mapWidth - buttonWidth - (compactEmbeddedRendering ? 4 : 6);
+        int buttonTop = mapTop + (compactEmbeddedRendering ? 2 : 4);
 
         lastRecenterButtonLeft = buttonLeft;
         lastRecenterButtonTop = buttonTop;
@@ -696,14 +708,12 @@ public class TacticalMapHUD implements IGuiOverlay {
 
         guiGraphics.fill(buttonLeft, buttonTop, buttonLeft + buttonWidth, buttonTop + buttonHeight, 0xAA101010);
         guiGraphics.renderOutline(buttonLeft, buttonTop, buttonWidth, buttonHeight, 0xAAE6E06A);
-        guiGraphics.drawString(
-            Minecraft.getInstance().font,
-            label,
-            buttonLeft + (buttonWidth - Minecraft.getInstance().font.width(label)) / 2,
-            buttonTop + 3,
-            0xFFFFFF55,
-            false
-        );
+        int textHeight = Math.max(1,
+            Math.round(Minecraft.getInstance().font.lineHeight * textScale));
+        drawMapText(guiGraphics, label,
+            buttonLeft + Math.max(0, (buttonWidth - labelWidth) / 2),
+            buttonTop + Math.max(0, (buttonHeight - textHeight) / 2),
+            0xFFFFFF55);
     }
 
     private void clearRecenterButton() {
@@ -948,11 +958,11 @@ public class TacticalMapHUD implements IGuiOverlay {
         float playerRenderYaw = Mth.rotLerp(partialTick, player.yRotO, player.getYRot());
 
         MapViewport content = createViewport(config, bounds, playerRenderX, playerRenderZ,
-            mapLeft, mapTop, mapWidth, mapHeight, showInteractionChrome ? MAP_TITLE_HEIGHT : 0);
+            mapLeft, mapTop, mapWidth, mapHeight, getMapTitleHeight(showInteractionChrome));
         if (allowMouseDrag) {
             handleMapDrag(content, bounds);
             content = createViewport(config, bounds, playerRenderX, playerRenderZ,
-                mapLeft, mapTop, mapWidth, mapHeight, showInteractionChrome ? MAP_TITLE_HEIGHT : 0);
+                mapLeft, mapTop, mapWidth, mapHeight, getMapTitleHeight(showInteractionChrome));
             lastInteractiveViewport = content;
         } else {
             draggingMap = false;
@@ -971,6 +981,8 @@ public class TacticalMapHUD implements IGuiOverlay {
         String localTeam = EspetroTeamBridge.getPlayerTeam(player);
 
         renderBasesOnMap(guiGraphics, content, player, config.showLabels, localTeam);
+
+        renderFobRadiiOnMap(guiGraphics, content, localTeam);
 
         renderCapturePointsOnMap(guiGraphics, content, player, config.showLabels);
 
@@ -1054,14 +1066,23 @@ public class TacticalMapHUD implements IGuiOverlay {
             double mapPosY = viewport.screenYd(pos.getZ());
             int size = Math.round(BASTION_MARKER_SIZE * getSelectedDeploymentScale(pos.getX(), pos.getZ()));
             int bastionColor = getBastionColor(bastion.getTeam());
-            renderBastionMarker(guiGraphics, mapPosX, mapPosY, size, bastionColor);
+            renderBastionMarker(guiGraphics, mapPosX, mapPosY, size, bastionColor, bastion);
             considerMarkerHover(mapPosX, mapPosY, size, pos.getX(), pos.getZ());
 
             if (!showLabels) {
                 continue;
             }
 
-            String name = bastion.getName() == null || bastion.getName().isEmpty() ? "兵站" : bastion.getName();
+            String fallback = bastion.isRally() ? "Rally" : "FOB";
+            String name = bastion.getName() == null || bastion.getName().isEmpty() ? fallback : bastion.getName();
+            if (bastion.isRally()) {
+                name += " · " + bastion.getNextWaveSeconds() + "s";
+            } else {
+                name += " · 建材 " + bastion.getConstruction() + " / 弹药 " + bastion.getAmmunition();
+                if (!bastion.isOperational()) {
+                    name += " · HAB不可用";
+                }
+            }
             renderMapLabel(guiGraphics, name, mapPosX, mapPosY, size + 3, -size / 2, 0xFFFFFF);
 
         }
@@ -1102,24 +1123,58 @@ public class TacticalMapHUD implements IGuiOverlay {
         }
     }
 
-    private void renderBastionMarker(GuiGraphics guiGraphics, double x, double y, int size, int color) {
-        guiGraphics.pose().pushPose();
-        guiGraphics.pose().translate(x, y, 0.0D);
-        try {
-            renderBastionMarkerAtOrigin(guiGraphics, size, color);
-        } finally {
-            guiGraphics.pose().popPose();
+    private void renderFobRadiiOnMap(GuiGraphics guiGraphics, MapViewport viewport, String localTeam) {
+        for (SyncBastionsMessage.BastionInfo bastion : visibleBastions) {
+            if (bastion.isRally() || !isVisibleTeamMarker(localTeam, bastion.getTeam())) {
+                continue;
+            }
+            BlockPos pos = bastion.getPos();
+            if (bastion.getExclusionRadius() > 0.0) {
+                renderWorldCircle(guiGraphics, viewport, pos.getX(), pos.getZ(),
+                    bastion.getExclusionRadius(), 0x553F444A);
+            }
+            if (bastion.getBuildRadius() > 0.0) {
+                renderWorldCircle(guiGraphics, viewport, pos.getX(), pos.getZ(),
+                    bastion.getBuildRadius(), 0x9955AFFF);
+            }
         }
     }
 
-    private void renderBastionMarkerAtOrigin(GuiGraphics guiGraphics, int size, int color) {
-        int half = Math.max(2, size / 2);
-        int arm = Math.max(1, size / 5);
-        guiGraphics.fill(-arm, -half, arm + 1, -arm, color);
-        guiGraphics.fill(-half, -arm, half + 1, arm + 1, color);
-        guiGraphics.fill(-arm, arm, arm + 1, half + 1, color);
-        guiGraphics.fill(-half + 1, -half + 1, half, half, 0xCC101010);
-        guiGraphics.fill(-arm, -arm, arm + 1, arm + 1, color);
+    private void renderWorldCircle(GuiGraphics guiGraphics, MapViewport viewport,
+                                   double centerX, double centerZ, double radius, int color) {
+        final int segments = 72;
+        double previousX = viewport.screenXd(centerX + radius);
+        double previousY = viewport.screenYd(centerZ);
+        for (int index = 1; index <= segments; index++) {
+            double angle = Math.PI * 2.0 * index / segments;
+            double currentX = viewport.screenXd(centerX + Math.cos(angle) * radius);
+            double currentY = viewport.screenYd(centerZ + Math.sin(angle) * radius);
+            drawClippedLine(guiGraphics, previousX, previousY, currentX, currentY, color, viewport);
+            previousX = currentX;
+            previousY = currentY;
+        }
+    }
+
+    private void renderBastionMarker(GuiGraphics guiGraphics, double x, double y, int size, int color,
+                                     SyncBastionsMessage.BastionInfo bastion) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0D);
+        try {
+            ResourceLocation icon = bastion.isRally()
+                ? SQUAD_RALLY_ICON
+                : (bastion.isOperational() ? SQUAD_HAB_ICON : SQUAD_RADIO_ICON);
+            int textureWidth = bastion.isRally() ? 256 : 128;
+            int half = Math.max(5, size / 2);
+            float red = ((color >> 16) & 0xFF) / 255.0F;
+            float green = ((color >> 8) & 0xFF) / 255.0F;
+            float blue = (color & 0xFF) / 255.0F;
+            RenderSystem.setShaderColor(red, green, blue, 1.0F);
+            guiGraphics.blit(icon, -half, -half, half * 2, half * 2,
+                0.0F, 0.0F, 128, 128, textureWidth, 128);
+        } finally {
+            RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
+            guiGraphics.pose().popPose();
+        }
     }
 
     private void renderVehicleSupplyStationMarker(GuiGraphics guiGraphics, double x, double y, int size, int color) {
@@ -1184,17 +1239,36 @@ public class TacticalMapHUD implements IGuiOverlay {
         guiGraphics.pose().pushPose();
         guiGraphics.pose().translate(x + offsetX, y + offsetY, 0.0D);
         try {
-            guiGraphics.drawString(
-                Minecraft.getInstance().font,
-                text,
-                0,
-                0,
-                color,
-                false
-            );
+            drawMapText(guiGraphics, text, 0, 0, color);
         } finally {
             guiGraphics.pose().popPose();
         }
+    }
+
+    private int getMapTitleHeight(boolean showInteractionChrome) {
+        if (!showInteractionChrome) {
+            return 0;
+        }
+        return compactEmbeddedRendering ? EMBEDDED_MAP_TITLE_HEIGHT : MAP_TITLE_HEIGHT;
+    }
+
+    private float getMapTextScale() {
+        return compactEmbeddedRendering ? EMBEDDED_TEXT_SCALE : 1.0F;
+    }
+
+    private void drawMapText(GuiGraphics guiGraphics, String text, int x, int y, int color) {
+        float scale = getMapTextScale();
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().scale(scale, scale, 1.0F);
+        guiGraphics.drawString(
+            Minecraft.getInstance().font,
+            text,
+            Math.round(x / scale),
+            Math.round(y / scale),
+            color,
+            false
+        );
+        guiGraphics.pose().popPose();
     }
 
     private int getBastionColor(String team) {
@@ -2115,9 +2189,10 @@ public class TacticalMapHUD implements IGuiOverlay {
 
         String text = "X: " + hoveredMapMarker.x + "  Z: " + hoveredMapMarker.z;
         var font = Minecraft.getInstance().font;
-        int padding = 4;
-        int tooltipWidth = font.width(text) + padding * 2;
-        int tooltipHeight = font.lineHeight + padding * 2;
+        float textScale = getMapTextScale();
+        int padding = compactEmbeddedRendering ? 2 : 4;
+        int tooltipWidth = Math.round(font.width(text) * textScale) + padding * 2;
+        int tooltipHeight = Math.round(font.lineHeight * textScale) + padding * 2;
         int minX = viewport.left;
         int maxX = Math.max(minX, viewport.right() - tooltipWidth);
         int minY = viewport.top;
@@ -2127,7 +2202,7 @@ public class TacticalMapHUD implements IGuiOverlay {
         int tooltipY = Mth.clamp((int) Math.round(markerHoverMouseY) + 10, minY, maxY);
         guiGraphics.fill(tooltipX, tooltipY, tooltipX + tooltipWidth, tooltipY + tooltipHeight, 0xEE101018);
         guiGraphics.renderOutline(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 0xFFE0E0E0);
-        guiGraphics.drawString(font, text, tooltipX + padding, tooltipY + padding, 0xFFFFFFFF, false);
+        drawMapText(guiGraphics, text, tooltipX + padding, tooltipY + padding, 0xFFFFFFFF);
     }
 
     private void renderSelectedDeploymentFrame(GuiGraphics guiGraphics, MapViewport viewport) {

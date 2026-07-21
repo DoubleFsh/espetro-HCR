@@ -125,6 +125,14 @@ repositories {
             includeGroup "curse.maven"
         }
     }
+    maven {
+        name = "Sighs Releases"
+        url = "https://maven.sighs.cc/repository/maven-releases/"
+        content {
+            includeGroup "cc.sighs.auratip"
+            includeGroup "cc.sighs.oelib"
+        }
+    }
 
     // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
     // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
@@ -132,7 +140,7 @@ repositories {
     //     dir 'libs'
     // }
     flatDir {
-        dirs '../Espetro/build/libs'
+        dirs '../../Java/Projects/Espetro/build/libs'
     }
 }
 
@@ -144,6 +152,8 @@ dependencies {
     // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
     implementation fg.deobf("curse.maven:mutil-351914:7772906")
+    implementation fg.deobf("cc.sighs.oelib:OELib-forge-1.20.1:${oelib_version}")
+    implementation fg.deobf("cc.sighs.auratip:auratip-forge-1.20.1:${auratip_version}")
     compileOnly fg.deobf("org.espetro:espetro:${espetro_version}")
     runtimeOnly fg.deobf("org.espetro:espetro:${espetro_version}")
 
@@ -174,6 +184,7 @@ tasks.named('processResources', ProcessResources).configure {
             loader_version_range: loader_version_range,
             mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
             mod_authors: mod_authors, mod_description: mod_description, espetro_version: espetro_version,
+            auratip_version: auratip_version, oelib_version: oelib_version,
     ]
     inputs.properties replaceProperties
 

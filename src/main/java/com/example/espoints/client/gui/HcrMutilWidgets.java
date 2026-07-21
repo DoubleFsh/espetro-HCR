@@ -11,10 +11,10 @@ import java.util.regex.Pattern;
 
 final class HcrMutilWidgets {
 
-    static final int BACKDROP = 0x7A3A3A3A;
-    static final int PANEL = 0x88363636;
-    static final int PANEL_SOFT = 0x66363636;
-    static final int BORDER = 0xA06D7482;
+    static final int BACKDROP = 0xB0121517;
+    static final int PANEL = 0xE0191C1E;
+    static final int PANEL_SOFT = 0xB0212527;
+    static final int BORDER = 0xA05B6260;
     static final int BORDER_ACTIVE = 0xFFE8B85C;
     static final int TEXT = 0xFFF3F1E8;
     static final int MUTED = 0xFFA8AEB8;
@@ -227,11 +227,11 @@ final class HcrMutilWidgets {
         private String label;
         private boolean enabled = true;
         private boolean selected = false;
-        private int normalColor = 0x60404040;
-        private int hoverColor = 0x80585858;
-        private int selectedColor = 0x80564022;
-        private int disabledColor = 0x38404040;
-        private int borderColor = 0x706D7482;
+        private int normalColor = 0xB01B1E20;
+        private int hoverColor = 0xD0435145;
+        private int selectedColor = 0xD04A4329;
+        private int disabledColor = 0x70181B1D;
+        private int borderColor = 0x805B6260;
         private int textColor = TEXT;
 
         ActionButton(int x, int y, int width, int height, String label, Runnable action) {
@@ -437,7 +437,7 @@ final class HcrMutilWidgets {
 
             int bx = x + getX();
             int by = y + getY();
-            graphics.fill(bx, by, bx + getWidth(), by + getHeight(), focused ? 0xAA272A31 : 0x88404040);
+            graphics.fill(bx, by, bx + getWidth(), by + getHeight(), focused ? 0xD0272D2B : 0xB01B1E20);
             graphics.renderOutline(bx, by, getWidth(), getHeight(), focused ? BORDER_ACTIVE : BORDER);
 
             String drawn = trimToWidth(value, Math.max(8, getWidth() - 12));

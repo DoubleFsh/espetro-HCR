@@ -137,6 +137,11 @@ manager.startOperationMode(1, "terminate");
 
 ## 战术地图与标点
 
+安装 Espetro 1.0.6-final 或更高版本时，服务端优先通过反射读取
+`EspetroAPI.getFobs()` 和 `EspetroAPI.getRallies()`。客户端据此显示 Radio/HAB/Rally
+图标、150 格建设半径、400 格排斥半径、FOB 建材/弹药库存、HAB 可用状态和 Rally
+下一波秒数；旧版 Espetro 会回退到 `BastionManager#getAllBastions`。
+
 ### `TacticalMapJsonConfig`
 
 ```java

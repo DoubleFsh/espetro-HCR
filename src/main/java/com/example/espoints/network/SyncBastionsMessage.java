@@ -39,11 +39,31 @@ public class SyncBastionsMessage {
         private final String name;
         private final String team;
         private final BlockPos pos;
+        private final String type;
+        private final int construction;
+        private final int ammunition;
+        private final boolean operational;
+        private final double buildRadius;
+        private final double exclusionRadius;
+        private final long nextWaveSeconds;
 
         public BastionInfo(String name, String team, BlockPos pos) {
+            this(name, team, pos, "FOB", 0, 0, true, 150.0, 400.0, 0L);
+        }
+
+        public BastionInfo(String name, String team, BlockPos pos, String type,
+                           int construction, int ammunition, boolean operational,
+                           double buildRadius, double exclusionRadius, long nextWaveSeconds) {
             this.name = name;
             this.team = team;
             this.pos = pos;
+            this.type = type == null ? "FOB" : type;
+            this.construction = Math.max(0, construction);
+            this.ammunition = Math.max(0, ammunition);
+            this.operational = operational;
+            this.buildRadius = Math.max(0.0, buildRadius);
+            this.exclusionRadius = Math.max(0.0, exclusionRadius);
+            this.nextWaveSeconds = Math.max(0L, nextWaveSeconds);
         }
 
         public String getName() {
@@ -58,16 +78,56 @@ public class SyncBastionsMessage {
             return pos;
         }
 
+        public String getType() {
+            return type;
+        }
+
+        public boolean isRally() {
+            return "RALLY".equalsIgnoreCase(type);
+        }
+
+        public int getConstruction() {
+            return construction;
+        }
+
+        public int getAmmunition() {
+            return ammunition;
+        }
+
+        public boolean isOperational() {
+            return operational;
+        }
+
+        public double getBuildRadius() {
+            return buildRadius;
+        }
+
+        public double getExclusionRadius() {
+            return exclusionRadius;
+        }
+
+        public long getNextWaveSeconds() {
+            return nextWaveSeconds;
+        }
+
         @Override
         public boolean equals(Object object) {
             if (this == object) return true;
             if (!(object instanceof BastionInfo other)) return false;
-            return name.equals(other.name) && team.equals(other.team) && pos.equals(other.pos);
+            return construction == other.construction
+                && ammunition == other.ammunition
+                && operational == other.operational
+                && Double.compare(buildRadius, other.buildRadius) == 0
+                && Double.compare(exclusionRadius, other.exclusionRadius) == 0
+                && nextWaveSeconds == other.nextWaveSeconds
+                && name.equals(other.name) && team.equals(other.team)
+                && pos.equals(other.pos) && type.equals(other.type);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(name, team, pos);
+            return Objects.hash(name, team, pos, type, construction, ammunition,
+                operational, buildRadius, exclusionRadius, nextWaveSeconds);
         }
     }
 
@@ -156,6 +216,13 @@ public class SyncBastionsMessage {
             buf.writeUtf(bastion.getName());
             buf.writeUtf(bastion.getTeam());
             buf.writeBlockPos(bastion.getPos());
+            buf.writeUtf(bastion.getType());
+            buf.writeVarInt(bastion.getConstruction());
+            buf.writeVarInt(bastion.getAmmunition());
+            buf.writeBoolean(bastion.isOperational());
+            buf.writeDouble(bastion.getBuildRadius());
+            buf.writeDouble(bastion.getExclusionRadius());
+            buf.writeVarLong(bastion.getNextWaveSeconds());
         }
 
         buf.writeVarInt(msg.bases.size());
@@ -184,7 +251,15 @@ public class SyncBastionsMessage {
             String name = buf.readUtf();
             String team = buf.readUtf();
             BlockPos pos = buf.readBlockPos();
-            bastions.add(new BastionInfo(name, team, pos));
+            String type = buf.readUtf();
+            int construction = buf.readVarInt();
+            int ammunition = buf.readVarInt();
+            boolean operational = buf.readBoolean();
+            double buildRadius = buf.readDouble();
+            double exclusionRadius = buf.readDouble();
+            long nextWaveSeconds = buf.readVarLong();
+            bastions.add(new BastionInfo(name, team, pos, type, construction, ammunition,
+                operational, buildRadius, exclusionRadius, nextWaveSeconds));
         }
 
         int baseSize = buf.readVarInt();

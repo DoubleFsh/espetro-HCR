@@ -114,6 +114,20 @@ public class MessagePopup implements IGuiOverlay {
     public void showMessage(UUID playerUUID, String message, long duration, 
                           int width, int height, int backgroundColor, 
                           int textColor, int borderColor, int borderWidth) {
+        Minecraft minecraft = Minecraft.getInstance();
+        boolean standardStyle = width == DEFAULT_WIDTH
+            && height == DEFAULT_HEIGHT
+            && backgroundColor == DEFAULT_BACKGROUND_COLOR
+            && textColor == DEFAULT_TEXT_COLOR
+            && borderColor == DEFAULT_BORDER_COLOR
+            && borderWidth == DEFAULT_BORDER_WIDTH;
+        if (standardStyle && minecraft.player != null
+                && minecraft.player.getUUID().equals(playerUUID)
+                && com.example.espoints.client.AuraTipMessagePopup.show(
+                    message, duration, width, height, backgroundColor, borderColor)) {
+            return;
+        }
+
         long currentTime = System.currentTimeMillis();
         long endTime = currentTime + duration;
         

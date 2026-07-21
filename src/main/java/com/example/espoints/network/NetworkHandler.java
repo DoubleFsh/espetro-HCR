@@ -9,7 +9,7 @@ import net.minecraftforge.network.simple.SimpleChannel;
  * 网络处理器类
  */
 public class NetworkHandler {
-    private static final String PROTOCOL_VERSION = "8";
+    private static final String PROTOCOL_VERSION = "9";
     
     public static final SimpleChannel INSTANCE = NetworkRegistry.newSimpleChannel(
         ResourceLocation.fromNamespaceAndPath(ESPointsMod.MOD_ID, "main"),

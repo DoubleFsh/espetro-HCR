@@ -7,6 +7,7 @@ HCR AAD 是 Minecraft Forge 1.20.1 的行动攻防、据点和战术地图模组
 - 分批次行动攻防与进攻/防守兵力。
 - 据点占领、奖励、死亡扣兵力和胜负结算。
 - 战术地图、地图背景、玩家位置与缩放控制。
+- 战术地图显示 Squad 风格的 Radio、HAB 与 Rally 图标、FOB 建设/排斥半径、共享库存和 Rally 波次。
 - 指挥官/小队长战术标点，同阵营同步。
 - Espetro `155火炮支援` 选点地图，右键将战术地图坐标提交给 Espetro KubeJS 技能回调；实际火力效果由 Espetro 的 `server_scripts` 实现。
 - 据点详情、兵力、区域和消息 HUD。
@@ -40,7 +41,7 @@ HCR AAD 是 Minecraft Forge 1.20.1 的行动攻防、据点和战术地图模组
 ## 构建
 
 ```bash
-cd /home/shushu/IdeaProjects/ds
+cd /home/shu/IdeaProjects/espetro-HCR
 ./gradlew build
 ```
 

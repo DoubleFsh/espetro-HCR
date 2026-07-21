@@ -82,6 +82,7 @@ public class CapturePointManager {
     private static final String ESPETRO_MOD_ID = "espetro";
     private static final String ESPETRO_TROOP_COUNT_MANAGER_CLASS = "org.espetro.team.TroopCountManager";
     private static final String ESPETRO_BASTION_MANAGER_CLASS = "org.espetro.bastion.BastionManager";
+    private static final String ESPETRO_API_CLASS = "org.espetro.api.EspetroAPI";
     private static final String ESPETRO_GAME_STATE_MANAGER_CLASS = "org.espetro.team.GameStateManager";
     private static final String ESPETRO_SPAWN_POINT_CONFIG_CLASS = "org.espetro.team.SpawnPointConfig";
     private static final String ESPETRO_VEHICLE_SUPPLY_STATION_TAG = "espetro_vehicle_supply_station";
@@ -1726,10 +1727,18 @@ public class CapturePointManager {
                 return visibleBastions;
             }
 
+            try {
+                appendEspetroApiFobs(player, visibleTeam, visibleBastions);
+                appendEspetroApiRallies(player, visibleTeam, visibleBastions);
+                return visibleBastions;
+            } catch (NoSuchMethodException | ClassNotFoundException ignored) {
+                // Compatibility path for Espetro versions before the logistics snapshot API.
+            }
+
             Class<?> managerClass = Class.forName(ESPETRO_BASTION_MANAGER_CLASS);
             Object manager = managerClass.getMethod("getInstance").invoke(null);
-            Method getTeamBastionsMethod = managerClass.getMethod("getTeamBastions", String.class);
-            Iterable<?> bastions = (Iterable<?>) getTeamBastionsMethod.invoke(manager, visibleTeam);
+            Method getAllBastionsMethod = managerClass.getMethod("getAllBastions");
+            Iterable<?> bastions = (Iterable<?>) getAllBastionsMethod.invoke(manager);
 
             for (Object bastion : bastions) {
                 if (bastion == null) {
@@ -1751,13 +1760,106 @@ public class CapturePointManager {
                 }
 
                 String name = (String) bastion.getClass().getMethod("getName").invoke(bastion);
-                visibleBastions.add(new SyncBastionsMessage.BastionInfo(name, bastionTeam, pos));
+                visibleBastions.add(new SyncBastionsMessage.BastionInfo(
+                    name, bastionTeam, pos, "FOB",
+                    invokeOptionalIntGetter(bastion, "getConstructionSupplies"),
+                    invokeOptionalIntGetter(bastion, "getAmmunitionSupplies"),
+                    invokeOptionalBooleanGetter(bastion, "isHabBuilt", true),
+                    150.0, 400.0, 0L));
             }
         } catch (Exception e) {
             ModLogger.warn("同步 Espetro 兵站信息失败，已跳过: " + e.getMessage());
         }
 
         return visibleBastions;
+    }
+
+    private void appendEspetroApiFobs(ServerPlayer player, String visibleTeam,
+                                      List<SyncBastionsMessage.BastionInfo> output)
+            throws ReflectiveOperationException {
+        Class<?> apiClass = Class.forName(ESPETRO_API_CLASS);
+        Object result = apiClass.getMethod("getFobs").invoke(null);
+        if (!(result instanceof Iterable<?> snapshots)) {
+            return;
+        }
+        String dimension = player.serverLevel().dimension().location().toString();
+        for (Object snapshot : snapshots) {
+            if (snapshot == null
+                || !visibleTeam.equals(invokeString(snapshot, "team"))
+                || !dimension.equals(invokeString(snapshot, "dimension"))) {
+                continue;
+            }
+            output.add(new SyncBastionsMessage.BastionInfo(
+                invokeString(snapshot, "name"),
+                invokeString(snapshot, "team"),
+                new BlockPos(invokeInt(snapshot, "x"), invokeInt(snapshot, "y"), invokeInt(snapshot, "z")),
+                "FOB",
+                invokeInt(snapshot, "construction"),
+                invokeInt(snapshot, "ammunition"),
+                invokeBoolean(snapshot, "habOperational"),
+                invokeDouble(snapshot, "buildRadius"),
+                invokeDouble(snapshot, "exclusionRadius"),
+                0L
+            ));
+        }
+    }
+
+    private void appendEspetroApiRallies(ServerPlayer player, String visibleTeam,
+                                         List<SyncBastionsMessage.BastionInfo> output)
+            throws ReflectiveOperationException {
+        Class<?> apiClass = Class.forName(ESPETRO_API_CLASS);
+        Object result = apiClass.getMethod("getRallies").invoke(null);
+        if (!(result instanceof Iterable<?> snapshots)) {
+            return;
+        }
+        String dimension = player.serverLevel().dimension().location().toString();
+        for (Object snapshot : snapshots) {
+            if (snapshot == null
+                || !visibleTeam.equals(invokeString(snapshot, "team"))
+                || !dimension.equals(invokeString(snapshot, "dimension"))) {
+                continue;
+            }
+            int squadId = invokeInt(snapshot, "squadId");
+            output.add(new SyncBastionsMessage.BastionInfo(
+                "Rally " + squadId,
+                invokeString(snapshot, "team"),
+                new BlockPos(invokeInt(snapshot, "x"), invokeInt(snapshot, "y"), invokeInt(snapshot, "z")),
+                "RALLY", 0, 0, true, 0.0, 0.0,
+                ((Number) snapshot.getClass().getMethod("nextWaveSeconds").invoke(snapshot)).longValue()
+            ));
+        }
+    }
+
+    private String invokeString(Object target, String name) throws ReflectiveOperationException {
+        return String.valueOf(target.getClass().getMethod(name).invoke(target));
+    }
+
+    private int invokeInt(Object target, String name) throws ReflectiveOperationException {
+        return ((Number) target.getClass().getMethod(name).invoke(target)).intValue();
+    }
+
+    private double invokeDouble(Object target, String name) throws ReflectiveOperationException {
+        return ((Number) target.getClass().getMethod(name).invoke(target)).doubleValue();
+    }
+
+    private boolean invokeBoolean(Object target, String name) throws ReflectiveOperationException {
+        return Boolean.TRUE.equals(target.getClass().getMethod(name).invoke(target));
+    }
+
+    private int invokeOptionalIntGetter(Object target, String name) {
+        try {
+            return ((Number) target.getClass().getMethod(name).invoke(target)).intValue();
+        } catch (ReflectiveOperationException | ClassCastException ignored) {
+            return 0;
+        }
+    }
+
+    private boolean invokeOptionalBooleanGetter(Object target, String name, boolean fallback) {
+        try {
+            return Boolean.TRUE.equals(target.getClass().getMethod(name).invoke(target));
+        } catch (ReflectiveOperationException ignored) {
+            return fallback;
+        }
     }
 
     private List<SyncBastionsMessage.BaseInfo> getVisibleEspetroBases(ServerPlayer player) {

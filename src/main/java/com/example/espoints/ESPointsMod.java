@@ -4,18 +4,20 @@ import com.example.espoints.capturepoint.CapturePointManager;
 import com.example.espoints.command.HCRCommand;
 import com.example.espoints.config.ModConfig;
 import com.example.espoints.config.TacticalMapConfig;
-import com.example.espoints.config.TacticalMapDataReloadListener;
 import com.example.espoints.config.TeamfightJsonConfig;
+import com.example.espoints.integration.EspetroBattlefieldIntegration;
 import com.example.espoints.network.NetworkHandler;
 import com.example.espoints.network.SyncTacticalMapBackgroundMessage;
+import com.example.espoints.network.RequestTacticalMapTileMessage;
+import com.example.espoints.network.RequestRateLimiter;
 import com.example.espoints.network.SyncTacticalMapConfigMessage;
 import com.example.espoints.tactical.TacticalMarkerManager;
+import com.example.espoints.tile.TacticalMapTileService;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 import net.minecraftforge.client.ConfigScreenHandler;
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
 import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.AddReloadListenerEvent;
 import net.minecraftforge.event.OnDatapackSyncEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
@@ -66,6 +68,7 @@ public class ESPointsMod {
         // 注册Forge事件
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(CapturePointManager.getInstance());
+        MinecraftForge.EVENT_BUS.register(new EspetroBattlefieldIntegration());
     }
     
     /**
@@ -144,15 +147,10 @@ public class ESPointsMod {
     public void onServerStarted(ServerStartedEvent event) {
         TacticalMarkerManager.reset();
         CapturePointManager.getInstance().resetTransientSyncCaches();
-        TeamfightJsonConfig.LoadResult result = TeamfightJsonConfig.loadConfig();
-        if (!result.isSuccess()) {
-            LOGGER.warn("行动模式JSON配置未加载: {}", result.getMessage());
-        }
-    }
-
-    @SubscribeEvent
-    public void onAddReloadListeners(AddReloadListenerEvent event) {
-        event.addListener(new TacticalMapDataReloadListener());
+        TeamfightJsonConfig.clearFrozenSnapshot();
+        TacticalMapTileService.get().clear();
+        RequestTacticalMapTileMessage.clearAll();
+        RequestRateLimiter.clearAll();
     }
 
     @SubscribeEvent

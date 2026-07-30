@@ -58,7 +58,7 @@ public class SyncMapPlayerDisplayMessage {
         ctx.get().enqueueWork(() -> {
             // 更新客户端的配置状态
             MapPlayerDisplayConfig.getInstance().setShowPlayerLocations(msg.showPlayerLocations);
-            ModLogger.info("客户端地图玩家显示配置已同步: showPlayerLocations = " + msg.showPlayerLocations);
+            ModLogger.debug("客户端地图玩家显示配置已同步: showPlayerLocations = " + msg.showPlayerLocations);
         });
         ctx.get().setPacketHandled(true);
     }
@@ -87,7 +87,7 @@ public class SyncMapPlayerDisplayMessage {
                 PacketDistributor.ALL.noArg(),
                 new SyncMapPlayerDisplayMessage(MapPlayerDisplayConfig.getInstance().isShowPlayerLocations())
             );
-            ModLogger.info("已向所有玩家广播地图玩家显示配置同步消息");
+            ModLogger.debug("已向所有玩家广播地图玩家显示配置同步消息");
         } catch (Exception e) {
             ModLogger.error("广播地图玩家显示配置同步消息失败: " + e.getMessage());
         }

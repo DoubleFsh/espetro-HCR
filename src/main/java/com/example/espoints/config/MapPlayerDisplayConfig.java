@@ -53,14 +53,14 @@ public class MapPlayerDisplayConfig {
                 MapPlayerDisplayConfig loadedConfig = gson.fromJson(content, MapPlayerDisplayConfig.class);
                 if (loadedConfig != null) {
                     this.showPlayerLocations = loadedConfig.showPlayerLocations;
-                    ModLogger.info("地图玩家显示配置已加载: showPlayerLocations = " + this.showPlayerLocations);
+                    ModLogger.debug("地图玩家显示配置已加载: showPlayerLocations = " + this.showPlayerLocations);
                 }
             } else {
                 // 配置文件不存在，使用默认值并保存
                 saveConfig();
             }
         } catch (IOException e) {
-            ModLogger.error("加载地图玩家显示配置失败: " + e.getMessage());
+            ModLogger.debug("加载地图玩家显示配置失败: " + e.getMessage());
         }
     }
     
@@ -73,9 +73,9 @@ public class MapPlayerDisplayConfig {
             Gson gson = new GsonBuilder().setPrettyPrinting().create();
             String content = gson.toJson(this);
             Files.writeString(configPath, content, StandardCharsets.UTF_8);
-            ModLogger.info("地图玩家显示配置已保存: showPlayerLocations = " + this.showPlayerLocations);
+            ModLogger.debug("地图玩家显示配置已保存: showPlayerLocations = " + this.showPlayerLocations);
         } catch (IOException e) {
-            ModLogger.error("保存地图玩家显示配置失败: " + e.getMessage());
+            ModLogger.debug("保存地图玩家显示配置失败: " + e.getMessage());
         }
     }
     

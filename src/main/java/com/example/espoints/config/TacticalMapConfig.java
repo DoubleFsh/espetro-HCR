@@ -22,6 +22,8 @@ public class TacticalMapConfig {
     
     // 守方进度条颜色配置
     public static final ForgeConfigSpec.ConfigValue<String> defenderProgressBarColor;
+    public static final ForgeConfigSpec.IntValue tileTextureCacheMiB;
+    public static final ForgeConfigSpec.EnumValue<MapImageQuality> mapImageQuality;
     
     static {
         // 开始构建配置
@@ -46,6 +48,14 @@ public class TacticalMapConfig {
         defenderProgressBarColor = BUILDER
                 .comment("守方进度条颜色 (十六进制，如：#0055FF)")
                 .define("defenderProgressBarColor", "#0055FF");
+
+        tileTextureCacheMiB = BUILDER
+                .comment("战术地图客户端瓦片纹理缓存（MiB）")
+                .defineInRange("tileTextureCacheMiB", 64, 16, 512);
+
+        mapImageQuality = BUILDER
+                .comment("战术地图图像质量：PERFORMANCE（性能）、BALANCED（平衡）、HIGH（高清）")
+                .defineEnum("mapImageQuality", MapImageQuality.BALANCED);
         
         // 结束构建配置
         BUILDER.pop();

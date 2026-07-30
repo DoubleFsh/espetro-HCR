@@ -16,6 +16,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 import com.example.espoints.ESPointsMod;
+import org.espetro.Espetro;
 import org.lwjgl.glfw.GLFW;
 
 @OnlyIn(Dist.CLIENT)
@@ -29,7 +30,7 @@ public class ClientEventHandler {
     
     public static final KeyMapping OPEN_GUI_KEY = new KeyMapping(
         KEY_OPEN_GUI,
-        GLFW.GLFW_KEY_J,
+        GLFW.GLFW_KEY_UNKNOWN,
         KEY_CATEGORY
     );
     
@@ -59,6 +60,7 @@ public class ClientEventHandler {
     private static boolean wasMapRangeDecreasePressed = false;
     private static boolean wasMapConfigKeyPressed = false;
     private static boolean wasMdReaderKeyPressed = false;
+    private static int tacticalMarkerVisibilityTicks;
     
     /**
      * 客户端初始化事件，用于创建音频文件夹
@@ -68,12 +70,18 @@ public class ClientEventHandler {
         // 创建fightBGM文件夹
         AudioManager.getAudioFilePath();
         ModLogger.info("已检查并确保fightBGM文件夹存在");
+        event.enqueueWork(TacticalMarkRadialController::initialize);
     }
 
     @SubscribeEvent
     public static void onClientLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         TacticalMapHUD.getInstance().clearServerSyncedBackgroundState();
         TacticalMapJsonConfig.apply(TacticalMapJsonConfig.createDefault(), "client disconnected");
+        ClientBattleState.get().clear();
+        ClientPlayerIdentityState.get().clear();
+        ClientTacticalMapTileCache.get().clear();
+        com.example.espoints.tactical.ClientTacticalMarkerState.clear();
+        tacticalMarkerVisibilityTicks = 0;
     }
     
     @SubscribeEvent
@@ -83,7 +91,9 @@ public class ClientEventHandler {
             
             // 处理打开GUI按键
             boolean isGuiKeyPressed = OPEN_GUI_KEY.isDown();
-            if (isGuiKeyPressed && !wasGuiKeyPressed && mc.player != null) {
+            if (isGuiKeyPressed && !wasGuiKeyPressed
+                    && mc.player != null && mc.screen == null
+                    && !conflictsWithEspetroKey(OPEN_GUI_KEY)) {
                 NetworkHandler.INSTANCE.sendToServer(new RequestCapturePointOverviewMessage());
             }
             wasGuiKeyPressed = isGuiKeyPressed;
@@ -95,38 +105,47 @@ public class ClientEventHandler {
             }
             wasTacticalMapKeyPressed = isTacticalMapPressed;
 
-            if (mc.player != null && mc.screen == null && TacticalMapHUD.getInstance().isMapVisible()) {
-                long window = mc.getWindow().getWindow();
-                
-                boolean isMapRangeIncreasePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
-                if (isMapRangeIncreasePressed && !wasMapRangeIncreasePressed) {
-                    TacticalMapHUD.getInstance().increaseRenderRange();
-                }
-                wasMapRangeIncreasePressed = isMapRangeIncreasePressed;
-                
-                boolean isMapRangeDecreasePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_B) == GLFW.GLFW_PRESS;
-                if (isMapRangeDecreasePressed && !wasMapRangeDecreasePressed) {
-                    TacticalMapHUD.getInstance().decreaseRenderRange();
-                }
-                wasMapRangeDecreasePressed = isMapRangeDecreasePressed;
-            } else {
-                wasMapRangeIncreasePressed = false;
-                wasMapRangeDecreasePressed = false;
-            }
-            
+            // 地图缩放已改为打开小地图时用滚轮（TacticalMapHUD.onHudMouseScrolled），
+            // 不再绑定 C/B 键，避免与提示词一并误导。
+            wasMapRangeIncreasePressed = false;
+            wasMapRangeDecreasePressed = false;
+
             // 处理地图配置界面按键（X键）
             boolean isMapConfigPressed = MAP_CONFIG_KEY.isDown();
-            if (isMapConfigPressed && !wasMapConfigKeyPressed && mc.player != null) {
-                mc.setScreen(new com.example.espoints.client.gui.TacticalMapConfigScreen(mc.screen));
+            if (isMapConfigPressed && !wasMapConfigKeyPressed
+                    && mc.player != null && mc.screen == null
+                    && !conflictsWithEspetroKey(MAP_CONFIG_KEY)) {
+                mc.setScreen(new com.example.espoints.client.gui.TacticalMapConfigScreen(null));
             }
             wasMapConfigKeyPressed = isMapConfigPressed;
             
             // 处理MD文件阅读器按键
             boolean isMdReaderPressed = OPEN_MD_READER_KEY.isDown();
-            if (isMdReaderPressed && !wasMdReaderKeyPressed && mc.player != null) {
+            if (isMdReaderPressed && !wasMdReaderKeyPressed
+                    && mc.player != null && mc.screen == null
+                    && !conflictsWithEspetroKey(OPEN_MD_READER_KEY)) {
                 mc.setScreen(new MDRenderScreen());
             }
             wasMdReaderKeyPressed = isMdReaderPressed;
+
+            // 战术标点轮盘（ESPoints 自有，3D+地图标点）
+            TacticalMarkRadialController.tick(mc);
+            if (++tacticalMarkerVisibilityTicks >= 20) {
+                tacticalMarkerVisibilityTicks = 0;
+                PingWheelMarkerBridge.refreshVisibility(
+                    com.example.espoints.tactical.ClientTacticalMarkerState.getMarkers());
+            }
         }
+    }
+
+    private static boolean conflictsWithEspetroKey(KeyMapping espointsKey) {
+        return sameKey(espointsKey, Espetro.KEY_TEAM)
+            || sameKey(espointsKey, Espetro.KEY_CLASS)
+            || sameKey(espointsKey, Espetro.KEY_SKILL)
+            || sameKey(espointsKey, Espetro.KEY_RADIAL);
+    }
+
+    private static boolean sameKey(KeyMapping espointsKey, Object espetroKey) {
+        return espetroKey instanceof KeyMapping key && espointsKey.same(key);
     }
 }

@@ -8,6 +8,7 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
+import org.espetro.api.EspetroAPI;
 
 import java.util.function.Supplier;
 
@@ -30,7 +31,9 @@ public class SelectArtillerySupportTargetMessage {
     }
 
     public static SelectArtillerySupportTargetMessage decode(FriendlyByteBuf buf) {
-        return new SelectArtillerySupportTargetMessage(buf.readDouble(), buf.readDouble());
+        return new SelectArtillerySupportTargetMessage(
+            PacketValidation.checkedCoordinate(buf.readDouble(), "artillery x"),
+            PacketValidation.checkedCoordinate(buf.readDouble(), "artillery z"));
     }
 
     public static void handle(SelectArtillerySupportTargetMessage message,
@@ -48,6 +51,10 @@ public class SelectArtillerySupportTargetMessage {
 
     private static void handleServer(ServerPlayer sender, double x, double z) {
         if (!Double.isFinite(x) || !Double.isFinite(z)) {
+            return;
+        }
+        if (!EspetroAPI.isActiveBattlefield(sender.serverLevel())) {
+            sender.sendSystemMessage(Component.literal("§c请进入当前战场后再选择目标。"));
             return;
         }
 

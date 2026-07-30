@@ -3,7 +3,8 @@ Specification-Title: espoints
 Specification-Vendor: Hydroceder
 Specification-Version: 1
 Implementation-Title: espetro-HCR
-Implementation-Version: 1.0.6-final
+Implementation-Version: 1.1.0-final
 Implementation-Vendor: Hydroceder
-Implementation-Timestamp: 2026-07-19T02:54:00+0800
+Implementation-Timestamp: 2026-07-30T18:31:08+0800
+MixinConfigs: espoints.mixins.json
 

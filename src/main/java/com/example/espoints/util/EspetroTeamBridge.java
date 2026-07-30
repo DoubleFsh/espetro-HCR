@@ -2,11 +2,13 @@ package com.example.espoints.util;
 
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.scores.PlayerTeam;
 import net.minecraft.world.scores.Team;
 
 import java.lang.reflect.Method;
 import java.util.Locale;
+import org.espetro.api.EspetroAPI;
 
 /**
  * Normalizes HCRpoints team logic to Espetro's canonical ATTACK/DEFEND sides.
@@ -44,9 +46,14 @@ public final class EspetroTeamBridge {
             return scoreboardTeam;
         }
 
-        String clientTeam = getClientPlayerTeam();
-        if (clientTeam != null) {
-            return clientTeam;
+        // ClientGameState only describes the local player. Reusing it for a remote
+        // player without a scoreboard team incorrectly makes unassigned players
+        // look like members of the local side.
+        if (player.isLocalPlayer()) {
+            String clientTeam = getClientPlayerTeam();
+            if (clientTeam != null) {
+                return clientTeam;
+            }
         }
         return null;
     }
@@ -88,6 +95,34 @@ public final class EspetroTeamBridge {
 
     public static boolean isEspetroTeamPlayer(Player player) {
         return getPlayerTeam(player) != null;
+    }
+
+    /**
+     * Whether a player is actively deployed and may be represented on the tactical map.
+     * The server uses Espetro's authoritative API; the client-side fallback rejects
+     * unassigned, dead and spectator/waiting entities.
+     */
+    public static boolean isPlayerVisibleOnTacticalMap(Player player) {
+        if (player == null) {
+            return false;
+        }
+        if (player instanceof ServerPlayer serverPlayer) {
+            Boolean fromApi = invokeStaticBooleanIfPresent(
+                ESPETRO_API_CLASS_NAME,
+                "isPlayerVisibleOnTacticalMap",
+                new Class<?>[] {ServerPlayer.class},
+                serverPlayer
+            );
+            if (fromApi != null) {
+                return fromApi;
+            }
+        }
+        // 客户端无法直接读取 Espetro 的服务端 waitingPlayers。死亡重部署现为
+        // ADVENTURE + BLINDNESS，因此失明也是统一等待态的客户端兜底标记。
+        return player.isAlive()
+            && !player.isSpectator()
+            && !player.hasEffect(MobEffects.BLINDNESS)
+            && getPlayerTeam(player) != null;
     }
 
     public static boolean isSameTeam(String left, String right) {
@@ -163,7 +198,15 @@ public final class EspetroTeamBridge {
         return canonicalTeam == null ? "" : canonicalTeam;
     }
 
-    /** 使用 Espetro 名牌规则为战术地图上的队友图标着色。 */
+    /** 战术地图着色：金=指挥官 / 紫=本队队长 / 蓝=本队队员 / 白=同阵营其它。 */
+    public static final int MAP_COLOR_COMMANDER = 0xFFFFC766;
+    public static final int MAP_COLOR_SQUAD_LEADER = 0xFFD48CFF;
+    public static final int MAP_COLOR_SQUAD_MEMBER = 0xFF67A7FF;
+    public static final int MAP_COLOR_FRIENDLY = 0xFFFFFFFF;
+
+    /**
+     * 使用 Espetro 名牌规则为战术地图上的队友图标着色（依赖客户端小队缓存）。
+     */
     public static int getMapPlayerColor(String playerName) {
         try {
             Class<?> tacticalStateClass = Class.forName(ESPETRO_CLIENT_TACTICAL_STATE_CLASS_NAME);
@@ -175,17 +218,104 @@ public final class EspetroTeamBridge {
         }
     }
 
-    /** 服务端权威权限：指挥官或任一小队队长。 */
+    /**
+     * 根据服务端同步的小队元数据着色（相对本地玩家小队）。
+     * 优先于纯名字查找，避免 ClientTacticalState 未同步时全白。
+     */
+    public static int getMapPlayerColor(String playerName, int squadId, boolean squadLeader, boolean commander) {
+        if (commander) {
+            return MAP_COLOR_COMMANDER;
+        }
+        int mySquadId = getLocalSquadId();
+        if (squadId >= 0 && squadId == mySquadId) {
+            return squadLeader ? MAP_COLOR_SQUAD_LEADER : MAP_COLOR_SQUAD_MEMBER;
+        }
+        // 服务端元数据已确认对方属于另一小队时，不能再让客户端名牌缓存
+        // 覆盖为紫/蓝色；不同小队的同阵营玩家始终显示白色。
+        if (squadId >= 0 && mySquadId >= 0) {
+            return MAP_COLOR_FRIENDLY;
+        }
+        // 客户端尚未得到本地小队信息时，回退 Espetro 的历史名牌规则。
+        int byName = getMapPlayerColor(playerName);
+        if (byName != DEFAULT_TEAMMATE_COLOR && byName != MAP_COLOR_FRIENDLY) {
+            return byName;
+        }
+        return MAP_COLOR_FRIENDLY;
+    }
+
+    public static int getLocalSquadId() {
+        try {
+            Class<?> tacticalStateClass = Class.forName(ESPETRO_CLIENT_TACTICAL_STATE_CLASS_NAME);
+            Method method = tacticalStateClass.getMethod("getMySquadId");
+            Object result = method.invoke(null);
+            return result instanceof Number number ? number.intValue() : -1;
+        } catch (ReflectiveOperationException ignored) {
+            return -1;
+        }
+    }
+
+    /** 公开：是否小队长（服务端）。 */
+    public static boolean isSquadLeaderPublic(ServerPlayer player) {
+        return isSquadLeader(player);
+    }
+
+    /** 服务端权威权限：指挥官、小队长、火力组组长或合法载具座位（EspetroAPI.canPlacePing）。 */
     public static boolean canPlaceTacticalMarker(ServerPlayer player) {
+        return player != null && EspetroAPI.canPlacePing(player);
+    }
+
+    /**
+     * 客户端粗检：无服务端玩家对象时，用 UUID 反射 canPlacePing；失败则 true 交服务端裁决。
+     */
+    public static boolean canPlaceTacticalMarkerClientHint(net.minecraft.world.entity.player.Player player) {
         if (player == null) {
             return false;
         }
-
-        if (isCommander(player) || isSquadLeader(player)) {
+        if (getPlayerTeam(player) == null) {
+            return false;
+        }
+        // 载具类型与座位由服务端最终判断；客户端只要正在乘坐就允许打开轮盘。
+        if (player.isPassenger()) {
             return true;
         }
+        try {
+            Class<?> tacticalState = Class.forName(ESPETRO_CLIENT_TACTICAL_STATE_CLASS_NAME);
+            Object value = tacticalState
+                .getMethod("canLocalPlayerPlacePing", String.class)
+                .invoke(null, player.getName().getString());
+            return Boolean.TRUE.equals(value);
+        } catch (ReflectiveOperationException ignored) {
+            // 缓存尚未同步时允许打开，选择结果仍必须通过服务端权威校验。
+            return true;
+        }
+    }
 
-        return false;
+    /** 对外：是否指挥官（放置标点时写入 ownerCommander）。 */
+    public static boolean isCommander(ServerPlayer player) {
+        return player != null && isCommanderInternal(player);
+    }
+
+    /** 对外：Espetro 小队编号；无小队为 {@link com.example.espoints.tactical.TacticalMarker#NO_SQUAD}。 */
+    public static int getPlayerSquadId(ServerPlayer player) {
+        if (player == null) {
+            return com.example.espoints.tactical.TacticalMarker.NO_SQUAD;
+        }
+        Integer fromApi = invokeStaticIntIfPresent(ESPETRO_API_CLASS_NAME, "getPlayerSquadId",
+            new Class<?>[] {java.util.UUID.class}, player.getUUID());
+        if (fromApi != null) {
+            return fromApi;
+        }
+        try {
+            Class<?> squadManagerClass = Class.forName(ESPETRO_SQUAD_MANAGER_CLASS_NAME);
+            Object squadManager = squadManagerClass.getMethod("getInstance").invoke(null);
+            Object result = squadManagerClass.getMethod("getPlayerSquadId", java.util.UUID.class)
+                .invoke(squadManager, player.getUUID());
+            if (result instanceof Number number) {
+                return number.intValue();
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+        return com.example.espoints.tactical.TacticalMarker.NO_SQUAD;
     }
 
     public static boolean submitArtillerySupportTarget(ServerPlayer player, double x, double z) {
@@ -205,7 +335,7 @@ public final class EspetroTeamBridge {
                 new Class<?>[] {ServerPlayer.class, double.class, double.class}, player, x, z);
     }
 
-    private static boolean isCommander(ServerPlayer player) {
+    private static boolean isCommanderInternal(ServerPlayer player) {
         if (invokeStaticBoolean(ESPETRO_API_CLASS_NAME, "isCommander",
                 new Class<?>[] {java.util.UUID.class}, player.getUUID())) {
             return true;
@@ -299,6 +429,20 @@ public final class EspetroTeamBridge {
             return null;
         } catch (ReflectiveOperationException ignored) {
             return false;
+        }
+    }
+
+    private static Integer invokeStaticIntIfPresent(String className, String methodName,
+                                                    Class<?>[] parameterTypes, Object... args) {
+        try {
+            Class<?> targetClass = Class.forName(className);
+            Method method = targetClass.getMethod(methodName, parameterTypes);
+            Object result = method.invoke(null, args);
+            return result instanceof Number number ? number.intValue() : null;
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            return null;
+        } catch (ReflectiveOperationException ignored) {
+            return null;
         }
     }
 

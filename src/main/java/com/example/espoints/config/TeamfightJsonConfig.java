@@ -16,7 +16,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraftforge.server.ServerLifecycleHooks;
 
 import java.io.IOException;
-import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -32,18 +31,17 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * JSON-backed action mode setup.
- *
- * <p>The config lives at config/espoints/teamfight.json and is loaded on
- * server startup, /hcrpi reload, or /hcrpi teamfight loadconfig.</p>
+ * Frozen per-map action-mode setup supplied by Espetro.
  */
 public final class TeamfightJsonConfig {
-    public static final String CONFIG_FILE_NAME = "teamfight.json";
-
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String CONFIG_DIRECTORY = "espoints";
     private static final int DEFAULT_REINFORCEMENTS = 50;
+    /** 进攻方占完一批次据点时的默认兵力增援。 */
+    private static final int DEFAULT_ATTACK_BATCH_COMPLETION_REINFORCEMENT = 200;
     private static final int MAX_POINTS_PER_BATCH = 7;
+    private static String frozenMapId;
+    private static String frozenJson;
 
     private TeamfightJsonConfig() {
     }
@@ -59,29 +57,64 @@ public final class TeamfightJsonConfig {
         if (manager.isOperationModeRunning() && !allowWhileRunning) {
             return LoadResult.failure(configPath, "行动正在进行，未加载行动模式JSON配置");
         }
+        if (manager.isOperationModeRunning()) {
+            manager.stopOperationMode();
+        }
+
+        if (frozenJson == null || frozenJson.isBlank()) {
+            return LoadResult.failure(configPath, "无活动战场：据点配置仅来自 EsWorld/<map>/EsConfig/CapturePoints.json 快照，请先由 Espetro 装载地图");
+        }
 
         try {
-            ensureDefaultConfigExists(configPath);
-            TeamfightConfig config = readConfig(configPath);
+            TeamfightConfig config = parseJson(frozenJson);
             applyConfig(manager, config);
-            ModLogger.info("行动模式JSON配置已加载: " + configPath + "，计划据点 " + config.points.size() + " 个");
+            ModLogger.debug("已恢复地图 " + frozenMapId + " 的启动快照，计划据点 "
+                + config.points.size() + " 个");
             return LoadResult.success(configPath, config.points.size(), config.totalBatches, config.endBehavior);
-        } catch (IOException | RuntimeException e) {
+        } catch (RuntimeException e) {
             ModLogger.error("加载行动模式JSON配置失败: " + e.getMessage());
             return LoadResult.failure(configPath, e.getMessage());
         }
     }
 
+    public static synchronized LoadResult loadFrozenSnapshot(String mapId, String json) {
+        Path source = snapshotPath(mapId);
+        try {
+            TeamfightConfig config = parseJson(json);
+            CapturePointManager manager = CapturePointManager.getInstance();
+            if (manager.isOperationModeRunning()) {
+                manager.stopOperationMode();
+            }
+            frozenMapId = mapId == null || mapId.isBlank() ? "unknown" : mapId;
+            frozenJson = json;
+            applyConfig(manager, config);
+            ModLogger.info("已载入地图 " + frozenMapId + " 的据点配置，共 "
+                + config.points.size() + " 个计划据点");
+            return LoadResult.success(source, config.points.size(),
+                config.totalBatches, config.endBehavior);
+        } catch (RuntimeException e) {
+            return LoadResult.failure(source, e.getMessage());
+        }
+    }
+
+    public static synchronized void clearFrozenSnapshot() {
+        frozenMapId = null;
+        frozenJson = null;
+    }
+
     public static LoadResult saveCurrentConfig() {
         CapturePointManager manager = CapturePointManager.getInstance();
-        Path configPath = getConfigPath();
+        String exportName = (frozenMapId == null ? "inactive" : frozenMapId)
+            .replaceAll("[^a-zA-Z0-9_-]", "_");
+        Path configPath = getExportDirectory().resolve(exportName + "-CapturePoints.json");
 
         try {
             Files.createDirectories(configPath.getParent());
 
             TeamfightConfig config = createConfigFromManager(manager);
             writeConfig(configPath, config);
-            ModLogger.info("行动模式JSON配置已保存: " + configPath + "，计划据点 " + config.points.size() + " 个");
+            ModLogger.info("当前据点状态已导出: " + configPath + "，计划据点 "
+                + config.points.size() + " 个；活动地图模板未被修改");
             return LoadResult.success(configPath, config.points.size(), config.totalBatches, config.endBehavior);
         } catch (IOException e) {
             ModLogger.error("保存行动模式JSON配置失败: " + e.getMessage());
@@ -99,6 +132,7 @@ public final class TeamfightJsonConfig {
         manager.setTeamRole(EspetroTeamBridge.DEFEND, "defender", defendReinforcements);
         manager.setTotalBatches(config.totalBatches);
         manager.setEndBehavior(config.endBehavior);
+        manager.setAttackBatchCompletionReinforcement(config.attackBatchCompletionReinforcement);
 
         for (PlannedPointConfig point : config.points) {
             if (!manager.addPlannedCapturePoint(point.name, point.pos1, point.pos2, point.batch)) {
@@ -109,14 +143,12 @@ public final class TeamfightJsonConfig {
         manager.syncToAllClients();
     }
 
-    private static TeamfightConfig readConfig(Path configPath) throws IOException {
-        try (Reader reader = Files.newBufferedReader(configPath, StandardCharsets.UTF_8)) {
-            JsonElement rootElement = JsonParser.parseReader(reader);
-            if (rootElement == null || !rootElement.isJsonObject()) {
-                throw new JsonParseException("配置根节点必须是JSON对象");
-            }
-            return parseConfig(rootElement.getAsJsonObject());
+    private static TeamfightConfig parseJson(String json) {
+        JsonElement rootElement = JsonParser.parseString(json);
+        if (rootElement == null || !rootElement.isJsonObject()) {
+            throw new JsonParseException("配置根节点必须是JSON对象");
         }
+        return parseConfig(rootElement.getAsJsonObject());
     }
 
     private static TeamfightConfig parseConfig(JsonObject root) {
@@ -140,7 +172,27 @@ public final class TeamfightJsonConfig {
             throw new JsonParseException("endBehavior 只能是 terminate 或 loop");
         }
 
-        return new TeamfightConfig(totalBatches, endBehavior, parseTeamReinforcements(root), points);
+        int attackBatchReward = parseAttackBatchCompletionReinforcement(root);
+        return new TeamfightConfig(totalBatches, endBehavior, parseTeamReinforcements(root), points,
+            attackBatchReward);
+    }
+
+    /**
+     * 进攻方占完当前批次全部据点时的兵力增援。
+     * 主字段 attackBatchCompletionReinforcement；兼容别名。
+     */
+    private static int parseAttackBatchCompletionReinforcement(JsonObject root) {
+        JsonElement element = firstPresent(root,
+            "attackBatchCompletionReinforcement",
+            "batchCompletionAttackReinforcement",
+            "attackCaptureReinforcement");
+        if (element == null || element.isJsonNull()) {
+            return DEFAULT_ATTACK_BATCH_COMPLETION_REINFORCEMENT;
+        }
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
+            throw new JsonParseException("attackBatchCompletionReinforcement 必须是数字");
+        }
+        return Math.max(0, element.getAsInt());
     }
 
     private static List<PlannedPointConfig> parsePoints(JsonObject root) {
@@ -281,7 +333,8 @@ public final class TeamfightJsonConfig {
                 manager.getTeamReinforcements(EspetroTeamBridge.DEFEND)
         ));
 
-        return new TeamfightConfig(totalBatches, endBehavior.toLowerCase(Locale.ROOT), reinforcements, points);
+        return new TeamfightConfig(totalBatches, endBehavior.toLowerCase(Locale.ROOT), reinforcements, points,
+            manager.getAttackBatchCompletionReinforcement());
     }
 
     private static int positiveOrDefault(int preferred, int fallback) {
@@ -294,16 +347,6 @@ public final class TeamfightJsonConfig {
         return DEFAULT_REINFORCEMENTS;
     }
 
-    private static void ensureDefaultConfigExists(Path configPath) throws IOException {
-        if (Files.exists(configPath)) {
-            return;
-        }
-
-        Files.createDirectories(configPath.getParent());
-        writeConfig(configPath, TeamfightConfig.empty());
-        ModLogger.info("已创建默认行动模式JSON配置: " + configPath);
-    }
-
     private static void writeConfig(Path configPath, TeamfightConfig config) throws IOException {
         try (Writer writer = Files.newBufferedWriter(configPath, StandardCharsets.UTF_8)) {
             GSON.toJson(toJsonObject(config), writer);
@@ -314,6 +357,8 @@ public final class TeamfightJsonConfig {
         JsonObject root = new JsonObject();
         root.addProperty("totalBatches", config.totalBatches);
         root.addProperty("endBehavior", config.endBehavior);
+        root.addProperty("attackBatchCompletionReinforcement",
+            config.attackBatchCompletionReinforcement);
 
         JsonObject reinforcements = new JsonObject();
         reinforcements.addProperty(EspetroTeamBridge.ATTACK,
@@ -397,14 +442,19 @@ public final class TeamfightJsonConfig {
     }
 
     public static Path getConfigPath() {
+        return snapshotPath(frozenMapId);
+    }
+
+    private static Path snapshotPath(String mapId) {
+        String safeMap = mapId == null || mapId.isBlank() ? "inactive"
+            : mapId.replaceAll("[^a-zA-Z0-9_-]", "_");
+        return Paths.get("EsWorld", safeMap, "EsConfig", "CapturePoints.json");
+    }
+
+    private static Path getExportDirectory() {
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server != null) {
-            return server.getServerDirectory().toPath()
-                    .resolve("config")
-                    .resolve(CONFIG_DIRECTORY)
-                    .resolve(CONFIG_FILE_NAME);
-        }
-        return Paths.get("config", CONFIG_DIRECTORY, CONFIG_FILE_NAME);
+        Path root = server == null ? Paths.get(".") : server.getServerDirectory().toPath();
+        return root.resolve("config").resolve(CONFIG_DIRECTORY).resolve("exports");
     }
 
     private static Map<String, Integer> defaultReinforcements() {
@@ -419,18 +469,17 @@ public final class TeamfightJsonConfig {
         private final String endBehavior;
         private final Map<String, Integer> teamReinforcements;
         private final List<PlannedPointConfig> points;
+        private final int attackBatchCompletionReinforcement;
 
         private TeamfightConfig(int totalBatches, String endBehavior,
                                 Map<String, Integer> teamReinforcements,
-                                List<PlannedPointConfig> points) {
+                                List<PlannedPointConfig> points,
+                                int attackBatchCompletionReinforcement) {
             this.totalBatches = totalBatches;
             this.endBehavior = endBehavior;
             this.teamReinforcements = teamReinforcements;
             this.points = points;
-        }
-
-        private static TeamfightConfig empty() {
-            return new TeamfightConfig(1, "terminate", defaultReinforcements(), new ArrayList<>());
+            this.attackBatchCompletionReinforcement = Math.max(0, attackBatchCompletionReinforcement);
         }
     }
 

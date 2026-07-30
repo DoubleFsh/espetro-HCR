@@ -1,7 +1,7 @@
 package com.example.espoints.hud;
 
 import com.example.espoints.capturepoint.CapturePoint;
-import com.example.espoints.capturepoint.CapturePointManager;
+import com.example.espoints.client.ClientBattleState;
 import com.example.espoints.capturepoint.DisplayState;
 import com.example.espoints.util.EspetroTeamBridge;
 import net.minecraft.client.Minecraft;
@@ -36,8 +36,7 @@ public class CurrentCapturePointHUD implements IGuiOverlay {
         }
 
         // 获取玩家当前所在的据点
-        CapturePointManager manager = CapturePointManager.getInstance();
-        CapturePoint currentPoint = manager.checkPlayerInCapturePoint(mc.player);
+        CapturePoint currentPoint = ClientBattleState.get().pointContaining(mc.player);
         if (currentPoint == null) {
             return; // 如果不在据点内，不渲染
         }

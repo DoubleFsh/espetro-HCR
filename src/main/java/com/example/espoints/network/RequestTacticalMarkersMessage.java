@@ -22,7 +22,11 @@ public class RequestTacticalMarkersMessage {
         ServerPlayer sender = context.getSender();
         context.enqueueWork(() -> {
             if (sender != null) {
-                TacticalMarkerManager.sendTo(sender);
+                if (RequestRateLimiter.allow(
+                        sender.getUUID(), "marker_snapshot",
+                        System.currentTimeMillis(), 1_000L)) {
+                    TacticalMarkerManager.sendTo(sender);
+                }
             }
         });
         context.setPacketHandled(true);

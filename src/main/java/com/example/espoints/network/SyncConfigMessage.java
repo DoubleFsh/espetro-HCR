@@ -41,6 +41,7 @@ public class SyncConfigMessage {
         this.enableFriendlyFirePenalty = buf.readBoolean();
         this.friendlyFirePenalty = buf.readInt();
         this.lowReinforcementThreshold = buf.readDouble();
+        validate(friendlyFirePenalty, lowReinforcementThreshold);
     }
     
     /**
@@ -49,11 +50,19 @@ public class SyncConfigMessage {
      * @param buf 网络数据包缓冲区
      */
     public static void encode(SyncConfigMessage msg, FriendlyByteBuf buf) {
+        validate(msg.friendlyFirePenalty, msg.lowReinforcementThreshold);
         buf.writeBoolean(msg.enableTeams);
         buf.writeBoolean(msg.enableOperationMode);
         buf.writeBoolean(msg.enableFriendlyFirePenalty);
         buf.writeInt(msg.friendlyFirePenalty);
         buf.writeDouble(msg.lowReinforcementThreshold);
+    }
+
+    private static void validate(int friendlyFirePenalty, double threshold) {
+        if (friendlyFirePenalty < 0 || friendlyFirePenalty > 10_000_000
+            || !Double.isFinite(threshold) || threshold < 0.0D || threshold > 100.0D) {
+            throw new IllegalArgumentException("Invalid common configuration payload");
+        }
     }
     
     /**

@@ -25,6 +25,11 @@ public class RequestCapturePointOverviewMessage {
             if (sender == null) {
                 return;
             }
+            if (!RequestRateLimiter.allow(
+                    sender.getUUID(), "capture_overview",
+                    System.currentTimeMillis(), 1_000L)) {
+                return;
+            }
 
             try {
                 SyncCapturePointOverviewMessage.sendOpenToPlayer(

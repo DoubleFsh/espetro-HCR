@@ -123,7 +123,7 @@ public class HCRCommand {
         source.sendSuccess(() -> Component.literal("/hcrpi teamfight stop - 停止行动"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi teamfight nextbatch - 推进到下一批次"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi teamfight save/load <序号> - 保存或加载行动预设"), false);
-        source.sendSuccess(() -> Component.literal("/hcrpi teamfight loadconfig/saveconfig - 读取或导出 config/espoints/teamfight.json"), false);
+        source.sendSuccess(() -> Component.literal("/hcrpi teamfight loadconfig/saveconfig - 恢复当前地图快照或导出运行状态"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi send <玩家> <边框颜色> <内容> - 向指定玩家发送消息弹窗"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi playsound <音效名> - 直接播放指定音效，例如：/hcrpi playsound lastStandBGM"), false);
         source.sendSuccess(() -> Component.literal("/hcrpi mapctrl <true|false> - 控制战术地图玩家位置显示"), false);
@@ -391,7 +391,7 @@ public class HCRCommand {
             totalBatches = manager.calculateTotalBatches();
         }
         if (totalBatches <= 0 || manager.getPlannedPointsInfo().isEmpty()) {
-            source.sendFailure(Component.literal("启动失败：未加载行动模式JSON配置或没有计划据点，请先编辑 config/espoints/teamfight.json 并执行 /hcrpi teamfight loadconfig"));
+            source.sendFailure(Component.literal("启动失败：当前 Espetro 地图没有可用的计划据点"));
             return 0;
         }
 
@@ -403,7 +403,7 @@ public class HCRCommand {
         manager.startOperationMode(totalBatches, endBehavior);
         String finalEndBehavior = endBehavior;
         int finalTotalBatches = totalBatches;
-        source.sendSuccess(() -> Component.literal("已按JSON配置启动行动！当前批次：1, 总批数：" + finalTotalBatches + ", 结束行为：" + finalEndBehavior), true);
+        source.sendSuccess(() -> Component.literal("已按当前地图启动行动！当前批次：1, 总批数：" + finalTotalBatches + ", 结束行为：" + finalEndBehavior), true);
         return 1;
     }
     
@@ -547,7 +547,7 @@ public class HCRCommand {
             return 0;
         }
 
-        TeamfightJsonConfig.LoadResult result = TeamfightJsonConfig.loadConfig();
+        TeamfightJsonConfig.LoadResult result = TeamfightJsonConfig.loadConfig(true);
         if (!result.isSuccess()) {
             source.sendFailure(Component.literal("加载行动模式JSON配置失败：" + result.getMessage()));
             return 0;
@@ -577,7 +577,7 @@ public class HCRCommand {
             return 0;
         }
 
-        source.sendSuccess(() -> Component.literal("行动模式JSON配置已保存：" + result.getPath()
+        source.sendSuccess(() -> Component.literal("当前据点状态已导出：" + result.getPath()
                 + "，计划据点 " + result.getPlannedPointCount()
                 + " 个，总批次 " + result.getTotalBatches()
                 + "，结束行为 " + result.getEndBehavior()), true);
@@ -762,20 +762,20 @@ public class HCRCommand {
         
         // 重新加载地图玩家显示配置
         com.example.espoints.config.MapPlayerDisplayConfig.getInstance().loadConfig();
-        TeamfightJsonConfig.LoadResult teamfightConfigResult = TeamfightJsonConfig.loadConfig();
+        TeamfightJsonConfig.LoadResult teamfightConfigResult = TeamfightJsonConfig.loadConfig(true);
         
         // 向所有玩家广播配置更新
         com.example.espoints.network.SyncMapPlayerDisplayMessage.broadcastToAll();
         
         String teamfightConfigMessage = teamfightConfigResult.isSuccess()
-            ? "；行动模式JSON已加载，计划据点 " + teamfightConfigResult.getPlannedPointCount() + " 个"
-            : "；行动模式JSON未加载：" + teamfightConfigResult.getMessage();
+            ? "；当前地图据点已恢复，计划据点 " + teamfightConfigResult.getPlannedPointCount() + " 个"
+            : "；当前地图据点未恢复：" + teamfightConfigResult.getMessage();
         
         // 发送成功消息
         source.sendSuccess(() -> Component.literal("已重新加载配置文件，当前地图玩家位置显示："
             + com.example.espoints.config.MapPlayerDisplayConfig.getInstance().isShowPlayerLocations()
             + teamfightConfigMessage
-            + "；战术地图JSON请使用 /reload 热加载数据包"), true);
+            + "；战术地图由当前 Espetro 地图提供"), true);
         
         return 1;
     }

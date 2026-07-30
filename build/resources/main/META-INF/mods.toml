@@ -5,7 +5,7 @@ issueTrackerURL="https://github.com/Hydroceder/espoints/issues"
 
 [[mods]]
 modId="espoints"
-version="1.0.6-final"
+version="1.1.0-final"
 displayName="EsPoints"
 displayURL=""
 credits="Hydroceder"
@@ -34,9 +34,16 @@ description='''AI-Generated Mod: A mod that enables attack and defense in Minecr
     side="BOTH"
 
 [[dependencies.espoints]]
-    modId="oelib"
+    modId="espetro"
     mandatory=true
-    versionRange="[0.2.4,)"
+    versionRange="[1.1.0-alpha,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.espoints]]
+    modId="pingwheel"
+    mandatory=true
+    versionRange="[1.12.1]"
     ordering="AFTER"
     side="BOTH"
 
@@ -48,8 +55,8 @@ description='''AI-Generated Mod: A mod that enables attack and defense in Minecr
     side="BOTH"
 
 [[dependencies.espoints]]
-    modId="espetro"
+    modId="oelib"
     mandatory=true
-    versionRange="[1.0.6-final,)"
+    versionRange="[0.2.4,)"
     ordering="AFTER"
     side="BOTH"

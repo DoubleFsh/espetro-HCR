@@ -16,6 +16,10 @@ public class ModConfig {
     
     // 性能配置
     public static ForgeConfigSpec.IntValue checkInterval;
+    public static ForgeConfigSpec.IntValue tacticalMapServerMemoryMiB;
+    public static ForgeConfigSpec.IntValue tacticalMapDiskCacheMiB;
+    public static ForgeConfigSpec.IntValue tacticalMapPlayerTransferKiBps;
+    public static ForgeConfigSpec.IntValue tacticalMapGlobalTransferKiBps;
     
     // 奖励配置
     public static ForgeConfigSpec.IntValue pointRewardInterval;
@@ -58,6 +62,18 @@ public class ModConfig {
         checkInterval = BUILDER
                 .comment("据点检查间隔（tick）")
                 .defineInRange("checkInterval", 5, 1, 100);
+        tacticalMapServerMemoryMiB = BUILDER
+                .comment("战术地图服务端编码瓦片内存缓存（MiB）")
+                .defineInRange("tacticalMapServerMemoryMiB", 32, 8, 512);
+        tacticalMapDiskCacheMiB = BUILDER
+                .comment("config/espoints/cache/tactical-map 磁盘预算（MiB）")
+                .defineInRange("tacticalMapDiskCacheMiB", 512, 64, 4096);
+        tacticalMapPlayerTransferKiBps = BUILDER
+                .comment("每名玩家战术地图瓦片传输预算（KiB/s）")
+                .defineInRange("tacticalMapPlayerTransferKiBps", 256, 32, 4096);
+        tacticalMapGlobalTransferKiBps = BUILDER
+                .comment("全服战术地图瓦片传输预算（KiB/s）")
+                .defineInRange("tacticalMapGlobalTransferKiBps", 4096, 256, 65536);
         BUILDER.pop();
         
         BUILDER.push("Reward Settings");

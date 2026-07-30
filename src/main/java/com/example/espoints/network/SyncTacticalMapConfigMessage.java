@@ -10,7 +10,7 @@ import net.minecraftforge.network.PacketDistributor;
 import java.util.function.Supplier;
 
 /**
- * Syncs the datapack-backed tactical map config from server to client.
+ * Syncs the active Espetro map's frozen tactical configuration to clients.
  */
 public class SyncTacticalMapConfigMessage {
     private static final String TACTICAL_MAP_HUD_CLASS = "com.example.espoints.hud.TacticalMapHUD";
@@ -24,7 +24,7 @@ public class SyncTacticalMapConfigMessage {
 
     public SyncTacticalMapConfigMessage(TacticalMapJsonConfig config, String source) {
         this.config = config == null ? TacticalMapJsonConfig.createDefault() : config.copy();
-        this.source = source == null ? "server datapack" : source;
+        this.source = source == null ? "EsWorld EsConfig" : source;
     }
 
     public SyncTacticalMapConfigMessage(FriendlyByteBuf buf) {
@@ -35,37 +35,58 @@ public class SyncTacticalMapConfigMessage {
         decoded.bottomRightZ = buf.readInt();
         decoded.initialRange = buf.readInt();
         decoded.minimumRange = buf.readInt();
-        decoded.backgroundImage = buf.readUtf();
+        decoded.backgroundImage = buf.readUtf(256);
         decoded.backgroundImageWidth = buf.readInt();
         decoded.backgroundImageHeight = buf.readInt();
         decoded.showGrid = buf.readBoolean();
         decoded.showLabels = buf.readBoolean();
         decoded.tacticalMarkerDurationSeconds = buf.readVarInt();
         decoded.tacticalMarkerFadeSeconds = buf.readVarInt();
+        decoded.tacticalMarkerMaxRenderDistance = buf.readVarInt();
+        validate(decoded);
         this.config = decoded;
-        this.source = buf.readUtf();
+        this.source = buf.readUtf(256);
     }
 
     public static void encode(SyncTacticalMapConfigMessage msg, FriendlyByteBuf buf) {
         TacticalMapJsonConfig config = msg.config;
+        validate(config);
         buf.writeInt(config.topLeftX);
         buf.writeInt(config.topLeftZ);
         buf.writeInt(config.bottomRightX);
         buf.writeInt(config.bottomRightZ);
         buf.writeInt(config.initialRange);
         buf.writeInt(config.minimumRange);
-        buf.writeUtf(config.backgroundImage == null ? "" : config.backgroundImage);
+        buf.writeUtf(config.backgroundImage == null ? "" : config.backgroundImage, 256);
         buf.writeInt(config.backgroundImageWidth);
         buf.writeInt(config.backgroundImageHeight);
         buf.writeBoolean(config.showGrid);
         buf.writeBoolean(config.showLabels);
         buf.writeVarInt(config.tacticalMarkerDurationSeconds);
         buf.writeVarInt(config.tacticalMarkerFadeSeconds);
-        buf.writeUtf(msg.source);
+        buf.writeVarInt(config.tacticalMarkerMaxRenderDistance);
+        buf.writeUtf(msg.source, 256);
     }
 
     public static SyncTacticalMapConfigMessage decode(FriendlyByteBuf buf) {
         return new SyncTacticalMapConfigMessage(buf);
+    }
+
+    private static void validate(TacticalMapJsonConfig config) {
+        if (config.bottomRightX <= config.topLeftX
+            || config.bottomRightZ <= config.topLeftZ
+            || config.initialRange <= 0 || config.initialRange > 60_000_000
+            || config.minimumRange <= 0 || config.minimumRange > config.initialRange
+            || config.backgroundImageWidth < 0 || config.backgroundImageWidth > 32_768
+            || config.backgroundImageHeight < 0 || config.backgroundImageHeight > 32_768
+            || config.tacticalMarkerDurationSeconds <= 0
+            || config.tacticalMarkerDurationSeconds > 86_400
+            || config.tacticalMarkerFadeSeconds <= 0
+            || config.tacticalMarkerFadeSeconds > 86_400
+            || config.tacticalMarkerMaxRenderDistance < 0
+            || config.tacticalMarkerMaxRenderDistance > 1_000_000) {
+            throw new IllegalArgumentException("Invalid tactical map configuration payload");
+        }
     }
 
     public static void handle(SyncTacticalMapConfigMessage msg, Supplier<NetworkEvent.Context> ctx) {
@@ -75,9 +96,9 @@ public class SyncTacticalMapConfigMessage {
                 return;
             }
 
-            TacticalMapJsonConfig.apply(msg.config, "server datapack: " + msg.source);
+            TacticalMapJsonConfig.apply(msg.config, "server map: " + msg.source);
             notifyHudConfigSynced();
-            ModLogger.info("客户端战术地图数据包配置已同步");
+            ModLogger.debug("客户端战术地图配置已同步");
         });
         context.setPacketHandled(true);
     }
@@ -109,7 +130,7 @@ public class SyncTacticalMapConfigMessage {
                 PacketDistributor.ALL.noArg(),
                 new SyncTacticalMapConfigMessage()
             );
-            ModLogger.info("已向所有玩家广播战术地图配置同步消息");
+            ModLogger.debug("已向所有玩家广播战术地图配置同步消息");
         } catch (Exception e) {
             ModLogger.error("广播战术地图配置同步消息失败: " + e.getMessage());
         }

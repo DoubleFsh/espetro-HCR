@@ -24,6 +24,10 @@ public class ModLogger {
      * 记录信息日志
      * @param message 日志消息
      */
+    public static void debug(String message) {
+        LOGGER.debug("[HCR] " + message);
+    }
+
     public static void info(String message) {
         LOGGER.info("[HCR] " + message);
     }

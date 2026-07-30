@@ -15,6 +15,9 @@ import java.util.function.Supplier;
  * 同步可见兵站信息的网络消息。
  */
 public class SyncBastionsMessage {
+    private static final int MAX_BASTIONS = 256;
+    private static final int MAX_BASES = 64;
+    private static final int MAX_SUPPLY_STATIONS = 128;
     private static final String TACTICAL_MAP_HUD_CLASS = "com.example.espoints.hud.TacticalMapHUD";
     private final List<BastionInfo> bastions;
     private final List<BaseInfo> bases;
@@ -45,7 +48,7 @@ public class SyncBastionsMessage {
         private final boolean operational;
         private final double buildRadius;
         private final double exclusionRadius;
-        private final long nextWaveSeconds;
+        private final long nextWaveAtMillis;
 
         public BastionInfo(String name, String team, BlockPos pos) {
             this(name, team, pos, "FOB", 0, 0, true, 150.0, 400.0, 0L);
@@ -53,7 +56,7 @@ public class SyncBastionsMessage {
 
         public BastionInfo(String name, String team, BlockPos pos, String type,
                            int construction, int ammunition, boolean operational,
-                           double buildRadius, double exclusionRadius, long nextWaveSeconds) {
+                           double buildRadius, double exclusionRadius, long nextWaveAtMillis) {
             this.name = name;
             this.team = team;
             this.pos = pos;
@@ -63,7 +66,7 @@ public class SyncBastionsMessage {
             this.operational = operational;
             this.buildRadius = Math.max(0.0, buildRadius);
             this.exclusionRadius = Math.max(0.0, exclusionRadius);
-            this.nextWaveSeconds = Math.max(0L, nextWaveSeconds);
+            this.nextWaveAtMillis = Math.max(0L, nextWaveAtMillis);
         }
 
         public String getName() {
@@ -84,6 +87,14 @@ public class SyncBastionsMessage {
 
         public boolean isRally() {
             return "RALLY".equalsIgnoreCase(type);
+        }
+
+        public boolean isRadio() {
+            return "RADIO".equalsIgnoreCase(type) || "FOB".equalsIgnoreCase(type);
+        }
+
+        public boolean isHab() {
+            return "HAB".equalsIgnoreCase(type);
         }
 
         public int getConstruction() {
@@ -107,7 +118,12 @@ public class SyncBastionsMessage {
         }
 
         public long getNextWaveSeconds() {
-            return nextWaveSeconds;
+            return Math.max(0L,
+                (nextWaveAtMillis - System.currentTimeMillis() + 999L) / 1000L);
+        }
+
+        public long getNextWaveAtMillis() {
+            return nextWaveAtMillis;
         }
 
         @Override
@@ -119,7 +135,7 @@ public class SyncBastionsMessage {
                 && operational == other.operational
                 && Double.compare(buildRadius, other.buildRadius) == 0
                 && Double.compare(exclusionRadius, other.exclusionRadius) == 0
-                && nextWaveSeconds == other.nextWaveSeconds
+                && nextWaveAtMillis == other.nextWaveAtMillis
                 && name.equals(other.name) && team.equals(other.team)
                 && pos.equals(other.pos) && type.equals(other.type);
         }
@@ -127,7 +143,7 @@ public class SyncBastionsMessage {
         @Override
         public int hashCode() {
             return Objects.hash(name, team, pos, type, construction, ammunition,
-                operational, buildRadius, exclusionRadius, nextWaveSeconds);
+                operational, buildRadius, exclusionRadius, nextWaveAtMillis);
         }
     }
 
@@ -211,82 +227,121 @@ public class SyncBastionsMessage {
     }
 
     public static void encode(SyncBastionsMessage msg, FriendlyByteBuf buf) {
+        PacketValidation.checkedCount(msg.bastions.size(), MAX_BASTIONS, "bastion");
+        PacketValidation.checkedCount(msg.bases.size(), MAX_BASES, "base");
+        PacketValidation.checkedCount(
+            msg.vehicleSupplyStations.size(), MAX_SUPPLY_STATIONS, "supply station");
         buf.writeVarInt(msg.bastions.size());
         for (BastionInfo bastion : msg.bastions) {
-            buf.writeUtf(bastion.getName());
-            buf.writeUtf(bastion.getTeam());
+            validateBastion(bastion);
+            buf.writeUtf(bastion.getName(), 64);
+            buf.writeUtf(bastion.getTeam(), 32);
             buf.writeBlockPos(bastion.getPos());
-            buf.writeUtf(bastion.getType());
+            buf.writeUtf(bastion.getType(), 16);
             buf.writeVarInt(bastion.getConstruction());
             buf.writeVarInt(bastion.getAmmunition());
             buf.writeBoolean(bastion.isOperational());
             buf.writeDouble(bastion.getBuildRadius());
             buf.writeDouble(bastion.getExclusionRadius());
-            buf.writeVarLong(bastion.getNextWaveSeconds());
+            buf.writeVarLong(bastion.getNextWaveAtMillis());
         }
 
         buf.writeVarInt(msg.bases.size());
         for (BaseInfo base : msg.bases) {
-            buf.writeUtf(base.getName());
-            buf.writeUtf(base.getTeam());
+            validateCommon(base.getName(), base.getTeam(), base.getPos());
+            if (!Float.isFinite(base.getYaw())) {
+                throw new IllegalArgumentException("Invalid base yaw");
+            }
+            buf.writeUtf(base.getName(), 64);
+            buf.writeUtf(base.getTeam(), 32);
             buf.writeBlockPos(base.getPos());
             buf.writeFloat(base.getYaw());
         }
 
         buf.writeVarInt(msg.vehicleSupplyStations.size());
         for (VehicleSupplyStationInfo station : msg.vehicleSupplyStations) {
-            buf.writeUtf(station.getName());
-            buf.writeUtf(station.getTeam());
+            validateCommon(station.getName(), station.getTeam(), station.getPos());
+            buf.writeUtf(station.getName(), 64);
+            buf.writeUtf(station.getTeam(), 32);
             buf.writeBlockPos(station.getPos());
         }
     }
 
     public static SyncBastionsMessage decode(FriendlyByteBuf buf) {
-        int size = buf.readVarInt();
-        if (size < 0 || size > 4096) {
-            throw new IllegalArgumentException("Invalid bastion count: " + size);
-        }
+        int size = PacketValidation.checkedCount(
+            buf.readVarInt(), MAX_BASTIONS, "bastion");
         List<BastionInfo> bastions = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
-            String name = buf.readUtf();
-            String team = buf.readUtf();
+            String name = buf.readUtf(64);
+            String team = buf.readUtf(32);
             BlockPos pos = buf.readBlockPos();
-            String type = buf.readUtf();
+            String type = buf.readUtf(16);
             int construction = buf.readVarInt();
             int ammunition = buf.readVarInt();
             boolean operational = buf.readBoolean();
             double buildRadius = buf.readDouble();
             double exclusionRadius = buf.readDouble();
-            long nextWaveSeconds = buf.readVarLong();
-            bastions.add(new BastionInfo(name, team, pos, type, construction, ammunition,
-                operational, buildRadius, exclusionRadius, nextWaveSeconds));
+            long nextWaveAtMillis = buf.readVarLong();
+            if (construction < 0 || ammunition < 0
+                || buildRadius < 0.0D || exclusionRadius < 0.0D
+                || nextWaveAtMillis < 0L) {
+                throw new IllegalArgumentException("Negative bastion field");
+            }
+            BastionInfo bastion = new BastionInfo(name, team, pos, type,
+                construction, ammunition, operational, buildRadius,
+                exclusionRadius, nextWaveAtMillis);
+            validateBastion(bastion);
+            bastions.add(bastion);
         }
 
-        int baseSize = buf.readVarInt();
-        if (baseSize < 0 || baseSize > 4096) {
-            throw new IllegalArgumentException("Invalid base count: " + baseSize);
-        }
+        int baseSize = PacketValidation.checkedCount(
+            buf.readVarInt(), MAX_BASES, "base");
         List<BaseInfo> bases = new ArrayList<>(baseSize);
         for (int i = 0; i < baseSize; i++) {
-            String name = buf.readUtf();
-            String team = buf.readUtf();
+            String name = buf.readUtf(64);
+            String team = buf.readUtf(32);
             BlockPos pos = buf.readBlockPos();
             float yaw = buf.readFloat();
+            validateCommon(name, team, pos);
+            if (!Float.isFinite(yaw)) {
+                throw new IllegalArgumentException("Invalid base yaw");
+            }
             bases.add(new BaseInfo(name, team, pos, yaw));
         }
 
-        int stationSize = buf.readVarInt();
-        if (stationSize < 0 || stationSize > 4096) {
-            throw new IllegalArgumentException("Invalid vehicle supply station count: " + stationSize);
-        }
+        int stationSize = PacketValidation.checkedCount(
+            buf.readVarInt(), MAX_SUPPLY_STATIONS, "vehicle supply station");
         List<VehicleSupplyStationInfo> stations = new ArrayList<>(stationSize);
         for (int i = 0; i < stationSize; i++) {
-            String name = buf.readUtf();
-            String team = buf.readUtf();
+            String name = buf.readUtf(64);
+            String team = buf.readUtf(32);
             BlockPos pos = buf.readBlockPos();
+            validateCommon(name, team, pos);
             stations.add(new VehicleSupplyStationInfo(name, team, pos));
         }
         return new SyncBastionsMessage(bastions, bases, stations);
+    }
+
+    private static void validateBastion(BastionInfo bastion) {
+        validateCommon(bastion.getName(), bastion.getTeam(), bastion.getPos());
+        if (bastion.getType() == null || bastion.getType().isBlank()
+            || bastion.getType().length() > 16
+            || bastion.getConstruction() > 10_000_000
+            || bastion.getAmmunition() > 10_000_000
+            || !Double.isFinite(bastion.getBuildRadius())
+            || !Double.isFinite(bastion.getExclusionRadius())
+            || bastion.getBuildRadius() > 100_000.0D
+            || bastion.getExclusionRadius() > 100_000.0D
+            || bastion.getNextWaveAtMillis() < 0L) {
+            throw new IllegalArgumentException("Invalid bastion payload");
+        }
+    }
+
+    private static void validateCommon(String name, String team, BlockPos pos) {
+        if (name == null || name.isBlank() || name.length() > 64
+            || team == null || team.length() > 32 || pos == null) {
+            throw new IllegalArgumentException("Invalid tactical structure payload");
+        }
     }
 
     public static void handle(SyncBastionsMessage msg, Supplier<NetworkEvent.Context> contextSupplier) {

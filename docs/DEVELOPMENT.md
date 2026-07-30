@@ -5,26 +5,29 @@
 HCR AAD 负责据点、行动批次、兵力显示和战术地图。Espetro 是阵营、小队、指挥官、职业和部署状态的权威来源。
 
 ```text
-Espetro ATTACK/DEFEND
-  -> EspetroTeamBridge
-  -> CapturePointManager / TacticalMarkerManager
+Espetro BattlefieldLifecycleEvent / GamePhaseChangedEvent
+  -> EspetroBattlefieldIntegration
+  -> ActiveBattlefieldSnapshot
+  -> CapturePointManager / TacticalMapJsonConfig / TacticalMarkerManager
   -> NetworkHandler
   -> 客户端 HUD 与战术地图
 ```
 
-`EspetroTeamBridge` 通过记分板和反射兼容 Espetro API，避免 HCR AAD 公共类在缺少客户端类时崩溃。
+`EspetroBattlefieldIntegration` 使用 Espetro 1.1.0-alpha 的公开事件和只读地图快照。
+`EspetroTeamBridge` 继续封装阵营、指挥官、小队长和技能提交，并在客户端类不可用时安全回退。
 
 ## 生命周期
 
-`HCRPointsMod` 完成以下注册：
+`ESPointsMod` 完成以下注册：
 
 1. 注册 COMMON 和 CLIENT Forge 配置。
 2. 注册网络包。
 3. 注册 HUD overlay。
 4. 注册 `/hcrpi` 命令。
-5. 服务器启动时加载 `teamfight.json`。
-6. 注册战术地图数据包重载监听器。
-7. 玩家登录或 `/reload` 后同步地图配置和运行状态。
+5. 注册 `EspetroBattlefieldIntegration`。
+6. 地图激活时应用 `TacticalMap.json`、`CapturePoints.json` 和底图的冻结快照。
+7. `DEPLOYING` 阶段自动开始据点；地图清理时清空全部战场状态。
+8. 玩家登录或数据包同步事件后发送当前内存快照，不重新读取磁盘。
 
 ## 对外 API
 
@@ -90,7 +93,7 @@ String team = ESPointsCommanderScriptAPI.getPlayerTeam(serverPlayer);
 | `getMapMinX/MinZ/MaxX/MaxZ()` | 返回当前战术地图边界 |
 | `getMapWidth()` / `getMapHeight()` | 返回地图宽高 |
 | `getPlayerTeam(player)` | 返回 Espetro 规范阵营 |
-| `canPlaceTacticalMarker(player)` | 是否为 Espetro 指挥官或小队长 |
+| `canPlaceTacticalMarker(player)` | 是否为 Espetro 指挥官、小队长、火力组组长或合法载具席位 |
 | `placeMarker(player, typeId, x, z)` | 通过 `TacticalMarkerManager` 放置标点并同步同阵营 |
 | `placeArtilleryTarget(player, x, z)` | 放置 `ARTILLERY_TARGET` 标点 |
 
@@ -137,7 +140,7 @@ manager.startOperationMode(1, "terminate");
 
 ## 战术地图与标点
 
-安装 Espetro 1.0.6-final 或更高版本时，服务端优先通过反射读取
+安装 Espetro 1.1.0-alpha 或更高版本时，服务端读取
 `EspetroAPI.getFobs()` 和 `EspetroAPI.getRallies()`。客户端据此显示 Radio/HAB/Rally
 图标、150 格建设半径、400 格排斥半径、FOB 建材/弹药库存、HAB 可用状态和 Rally
 下一波秒数；旧版 Espetro 会回退到 `BastionManager#getAllBastions`。
@@ -163,7 +166,7 @@ TacticalMarkerManager.place(
 );
 ```
 
-服务端会校验：调用者必须是 Espetro 指挥官或小队长、坐标必须在地图范围内、每队最多 64 个标点。删除只能由标点创建者执行。
+服务端会校验：调用者必须位于当前活动战场，且是 Espetro 指挥官、小队长、火力组组长或合法载具席位；坐标必须在地图范围内，每队最多 64 个标点。世界射线请求还会校验距离、视角和遮挡。删除只能由标点创建者执行，标点只同步给同阵营战场玩家。新增、删除和过期使用 `TacticalMarkerDeltaMessage`，仅首次恢复使用完整 `SyncTacticalMarkersMessage`。
 
 `TacticalMarkerType` 当前包含敌军步兵、坦克、步战车、轻型载具、直升机、进攻/防守指令以及 `ARTILLERY_TARGET`。`ARTILLERY_TARGET` 是 Espetro `155火炮支援` 的结果标点，不会出现在普通右键标点菜单中。
 
@@ -175,12 +178,18 @@ ESPoints 为 Espetro 的 `artillery_155` 指挥官技能提供战术地图选点
 2. ESPoints 向该玩家发送 S2C 包，客户端打开 `ArtillerySupportMapScreen`。
 3. `ArtillerySupportMapScreen` 使用与 J 键 `CapturePointDetailsScreen` 相同的主面板尺寸规则，并调用 `TacticalMapHUD.renderArtillerySelectionMap` 渲染嵌入式战术地图。
 4. 玩家可使用鼠标滚轮缩放、左键拖拽地图；右键不会打开普通标点菜单，而是直接通过 `MapViewport.worldX/worldZ` 计算世界 X/Z。
-5. 客户端发送 `SelectArtillerySupportTargetMessage` 到服务端。服务端先校验 `TacticalMapJsonConfig.TacticalMapBounds`，再通过 `EspetroTeamBridge.submitArtillerySupportTarget` 反射调用 `EspetroAPI.submitArtillerySupportTarget(ServerPlayer, double, double)`。
+5. 客户端发送 `SelectArtillerySupportTargetMessage` 到服务端。服务端先校验玩家所在维度和 `TacticalMapJsonConfig.TacticalMapBounds`，再通过 `EspetroTeamBridge.submitArtillerySupportTarget` 调用 `EspetroAPI.submitArtillerySupportTarget(ServerPlayer, double, double)`。
 6. Espetro 负责二次权限校验、Y 坐标求值、KubeJS 指挥官技能回调和冷却。ESPoints 在提交成功后放置 `ARTILLERY_TARGET` 战术标点并同步给同阵营玩家。
 
 ESPoints 不生成炮击实体，也不调度炮击波次。默认 `155火炮支援` 的实体 ID、目标高度、覆盖半径、批次数量、间隔和入射角都由 Espetro 的 KubeJS `server_scripts` 决定。
 
-这条链路不让 ESPoints 编译期依赖 Espetro 的实现类，也不让 Espetro 编译期依赖 ESPoints 的客户端类；双方只依赖 Forge `mods.toml` 运行时依赖关系和反射 API。
+ESPoints 编译期依赖 Espetro 的公开 API 和事件，不访问其内部实现。Espetro 仍通过客户端桥接打开 ESPoints 地图，避免把 ESPoints 变成 Espetro 的强制依赖。
+
+协议 `13` 将静态身份与 0.5 秒位置帧分离，并使用明确的 `PLAY_TO_CLIENT` /
+`PLAY_TO_SERVER` 注册方向。战术结构读取
+`EspetroAPI.getTacticalMapStateSnapshot()`：只有 revision 或战场 session 改变时才重建
+阵营快照。底图只同步 SHA-256 描述符和按需 512×512 瓦片；后台线程负责图片解码、缩放、
+PNG 编码和磁盘读取，渲染线程只注册/释放最终纹理。
 
 ## 配置类
 
@@ -189,9 +198,9 @@ ESPoints 不生成炮击实体，也不调度炮击波次。默认 `155火炮支
 | `ModConfig` | COMMON Forge 配置定义 |
 | `TacticalMapConfig` | CLIENT Forge 配置定义 |
 | `MapPlayerDisplayConfig` | 服务端玩家位置 JSON 持久化 |
-| `TeamfightJsonConfig` | 行动 JSON 解析、校验、导入和导出 |
-| `TacticalMapJsonConfig` | 数据包地图配置模型与边界计算 |
-| `TacticalMapDataReloadListener` | `/reload` 时读取 `tactical_map/default.json` |
+| `TeamfightJsonConfig` | 当前地图据点冻结快照解析、应用和只写导出 |
+| `TacticalMapJsonConfig` | 当前地图战术配置内存模型与边界计算 |
+| `EspetroBattlefieldIntegration` | 地图/阶段事件与 ESPoints 生命周期适配 |
 
 ## 网络开发
 
@@ -211,7 +220,7 @@ NetworkHandler.INSTANCE.send(
 | 据点状态 | `SyncCapturePointsMessage`, `RequestCapturePointOverviewMessage`, `SyncCapturePointOverviewMessage` |
 | 行动状态 | `SyncOperationModeMessage`, `SyncConfigMessage`, `SyncBastionsMessage` |
 | 地图 | `SyncPlayerPositionsMessage`, `SyncMapPlayerDisplayMessage`, `SyncTacticalMapConfigMessage` |
-| 战术标点 | `PlaceTacticalMarkerMessage`, `RemoveTacticalMarkerMessage`, `RequestTacticalMarkersMessage`, `SyncTacticalMarkersMessage` |
+| 战术标点 | `PlaceTacticalMarkerMessage`, `RemoveTacticalMarkerMessage`, `RequestTacticalMarkersMessage`, `SyncTacticalMarkersMessage`, `TacticalMarkerDeltaMessage` |
 | Espetro 火炮选点 | `OpenArtillerySupportMapMessage`, `SelectArtillerySupportTargetMessage` |
 | 客户端效果 | `ShowMessagePopupMessage`, `PlayLowReinforcementAudioMessage` |
 
@@ -237,7 +246,7 @@ NetworkHandler.INSTANCE.send(
 | `ReinforcementsHUD` | 双方兵力与进度条 |
 | `MessagePopup` | 服务端驱动消息弹窗 |
 
-GUI 类：`CapturePointDetailsScreen`、`ArtillerySupportMapScreen`、`TacticalMapConfigScreen`、`ServerConfigScreen`、`MDRenderScreen`、`MutilScreen`、`HcrMutilWidgets`、`ScrollableList`、`ScreenFadeIn`。
+GUI 类：`CapturePointDetailsScreen`、`ArtillerySupportMapScreen`、`TacticalMapConfigScreen`、`ServerConfigScreen`、`MDRenderScreen`、`MutilScreen`、`HcrMutilWidgets`、`ScrollableList`。所有窗口都继承稳定更新的 `MutilScreen`；旧逐帧淡入层已经移除。
 
 ## 类参考
 
@@ -258,14 +267,14 @@ GUI 类：`CapturePointDetailsScreen`、`ArtillerySupportMapScreen`、`TacticalM
 | 类 | 说明 |
 | --- | --- |
 | `HCRCommand` | `/hcrpi` Brigadier 命令树 |
-| `TeamfightJsonConfig` | 主行动 JSON |
+| `TeamfightJsonConfig` | 当前地图据点冻结快照与导出 |
 | `TeamfightPresetManager` | 旧式预设导入导出 |
 | `CapturePointPresetManager` | 已停用的普通据点预设兼容类 |
 | `ModConfig` | 通用 TOML |
 | `TacticalMapConfig` | 客户端 TOML |
 | `MapPlayerDisplayConfig` | 玩家位置 JSON |
-| `TacticalMapJsonConfig` | 地图数据包 JSON |
-| `TacticalMapDataReloadListener` | 数据包加载器 |
+| `TacticalMapJsonConfig` | 当前地图战术配置快照 |
+| `EspetroBattlefieldIntegration` | Espetro 战场/阶段事件监听器 |
 
 ### 战术系统
 
@@ -314,7 +323,7 @@ dispatcher.register(
 提交前检查：
 
 - 无 Espetro 时依赖提示明确，有 Espetro 时双方阵营正确绑定。
-- `teamfight.json` 的成功和失败样例均得到正确日志。
+- 当前地图的 `TacticalMap.json`、`CapturePoints.json` 成功和失败样例均得到正确日志。
 - `/reload` 后地图边界与所有客户端一致。
 - 非队长/指挥官无法放置标点。
 - 玩家断线、换队和行动重置后缓存被清理。

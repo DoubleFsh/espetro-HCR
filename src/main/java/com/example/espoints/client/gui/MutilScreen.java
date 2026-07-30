@@ -1,14 +1,20 @@
 package com.example.espoints.client.gui;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import se.mickelus.mutil.gui.GuiElement;
 
+/**
+ * Stable MUtil screen base. Structural refreshes are coalesced to one rebuild
+ * on the next client tick; no global alpha/vertical animation is applied.
+ */
 abstract class MutilScreen extends Screen {
 
     protected GuiElement root;
-    private ScreenFadeIn fadeIn;
+    private boolean rootRebuildPending;
+    private boolean rebuildingRoot;
 
     protected MutilScreen(Component title) {
         super(title);
@@ -17,14 +23,34 @@ abstract class MutilScreen extends Screen {
     @Override
     protected void init() {
         super.init();
-        rebuildMutilRoot();
-        fadeIn = new ScreenFadeIn();
+        rebuildMutilRootNow();
     }
 
     protected final void rebuildMutilRoot() {
+        rootRebuildPending = true;
+    }
+
+    private void rebuildMutilRootNow() {
+        if (rebuildingRoot) {
+            return;
+        }
+        rebuildingRoot = true;
         GuiElement newRoot = new GuiElement(0, 0, this.width, this.height);
         buildMutilRoot(newRoot);
         this.root = newRoot;
+        rebuildingRoot = false;
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        if (rootRebuildPending) {
+            rootRebuildPending = false;
+            rebuildMutilRootNow();
+        }
+        if (root != null) {
+            root.updateAnimations();
+        }
     }
 
     protected abstract void buildMutilRoot(GuiElement root);
@@ -38,29 +64,28 @@ abstract class MutilScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        renderBeforeMutil(graphics, mouseX, mouseY, partialTick);
-        if (root != null) {
-            root.updateFocusState(0, 0, mouseX, mouseY);
-
-            float offsetY = 0;
-            if (fadeIn != null) {
-                offsetY = fadeIn.preRender(graphics);
-                ScreenFadeIn.translateY(graphics, offsetY);
+        graphics.flush();
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        graphics.pose().pushPose();
+        try {
+            renderBeforeMutil(graphics, mouseX, mouseY, partialTick);
+            if (root != null) {
+                root.updateFocusState(0, 0, mouseX, mouseY);
+                root.draw(graphics, 0, 0, this.width, this.height, mouseX, mouseY, partialTick);
+                var tooltip = root.getTooltipLines();
+                if (tooltip != null && !tooltip.isEmpty()) {
+                    graphics.renderComponentTooltip(this.font, tooltip, mouseX, mouseY);
+                }
             }
-
-            root.draw(graphics, 0, 0, this.width, this.height, mouseX, mouseY, partialTick);
-
-            if (fadeIn != null) {
-                graphics.pose().translate(0, -offsetY, 0);
-                fadeIn.postRender();
-            }
-
-            var tooltip = root.getTooltipLines();
-            if (tooltip != null && !tooltip.isEmpty()) {
-                graphics.renderComponentTooltip(this.font, tooltip, mouseX, mouseY);
-            }
+            renderAfterMutil(graphics, mouseX, mouseY, partialTick);
+            graphics.flush();
+        } finally {
+            graphics.flush();
+            graphics.pose().popPose();
+            graphics.setColor(1f, 1f, 1f, 1f);
+            RenderSystem.disableBlend();
         }
-        renderAfterMutil(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override

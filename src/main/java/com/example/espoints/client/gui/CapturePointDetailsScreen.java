@@ -1,7 +1,7 @@
 package com.example.espoints.client.gui;
 
 import com.example.espoints.capturepoint.CapturePoint;
-import com.example.espoints.capturepoint.CapturePointManager;
+import com.example.espoints.client.ClientBattleState;
 import com.example.espoints.capturepoint.DisplayState;
 import com.example.espoints.network.NetworkHandler;
 import com.example.espoints.network.RequestCapturePointOverviewMessage;
@@ -53,7 +53,9 @@ public class CapturePointDetailsScreen extends MutilScreen {
         Minecraft mc = Minecraft.getInstance();
         if (mc.screen instanceof CapturePointDetailsScreen screen) {
             screen.rebuildForData();
-        } else {
+        } else if (mc.screen == null) {
+            // A delayed overview response must never replace Espetro's mandatory
+            // team, formation, deployment or death-redeployment screens.
             mc.setScreen(new CapturePointDetailsScreen());
         }
     }
@@ -231,7 +233,7 @@ public class CapturePointDetailsScreen extends MutilScreen {
             }
         }
 
-        List<CapturePoint> fallback = new ArrayList<>(CapturePointManager.getInstance().getAllCapturePoints());
+        List<CapturePoint> fallback = new ArrayList<>(ClientBattleState.get().points());
         fallback.sort(Comparator.comparingInt(CapturePoint::getBatch).thenComparing(CapturePoint::getName));
         return fallback;
     }
@@ -246,9 +248,9 @@ public class CapturePointDetailsScreen extends MutilScreen {
             hash = 31 * hash + point.getProgress();
             hash = 31 * hash + Objects.hashCode(point.getCaptorName());
         }
-        CapturePointManager manager = CapturePointManager.getInstance();
-        hash = 31 * hash + manager.getCurrentBatch();
-        hash = 31 * hash + manager.getTotalBatches();
+        ClientBattleState state = ClientBattleState.get();
+        hash = 31 * hash + state.currentBatch();
+        hash = 31 * hash + state.totalBatches();
         return hash;
     }
 

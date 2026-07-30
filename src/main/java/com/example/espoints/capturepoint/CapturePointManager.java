@@ -4,8 +4,11 @@ import com.example.espoints.ESPointsMod;
 import com.example.espoints.config.ModConfig;
 import com.example.espoints.network.SyncBastionsMessage;
 import com.example.espoints.network.SyncCapturePointsMessage;
+import com.example.espoints.network.SyncPlayerIdentityMessage;
+import com.example.espoints.network.SyncPlayerPositionsMessage;
 import com.example.espoints.util.EspetroTeamBridge;
 import com.example.espoints.util.ModLogger;
+import com.example.espoints.integration.OptionalPointsIntegration;
 import com.example.espoints.capturepoint.CaptureState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -21,6 +24,8 @@ import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.LogicalSide;
 import net.minecraftforge.fml.ModList;
+import org.espetro.api.EspetroAPI;
+import org.espetro.api.TacticalMapStateSnapshot;
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -36,6 +41,8 @@ public class CapturePointManager {
     
     // 存储所有据点的Map，键为据点名称，值为据点实例
     private final Map<String, CapturePoint> capturePoints;
+    private final CapturePointSpatialIndex capturePointSpatialIndex =
+        new CapturePointSpatialIndex();
     
     // 存储玩家名称的映射，键为UUID，值为玩家名称
     private final Map<UUID, String> playerNameMap;
@@ -43,16 +50,21 @@ public class CapturePointManager {
     // 存储玩家上一次同步时的队伍名称，用于检测原版team命令带来的队伍变化
     private final Map<UUID, String> playerTeamNameMap;
 
-    // 高频位置包仅在首次出现或身份变化时携带姓名/阵营。
-    private final Map<UUID, PlayerMetadata> lastBroadcastPlayerMetadata = new HashMap<>();
+    private final Map<UUID, Integer> tacticalPlayerIds = new HashMap<>();
+    private final Map<String, Integer> tacticalIdentityHashes = new HashMap<>();
+    private int nextTacticalPlayerId = 1;
+    private long tacticalPositionSession;
 
     // 兵站与基地通常不变，只在玩家可见数据实际变化时重发。
     private final Map<UUID, BastionSyncState> lastBastionSyncByPlayer = new HashMap<>();
-    private List<SyncBastionsMessage.VehicleSupplyStationInfo> cachedEspetroVehicleSupplyStations = List.of();
-    private long cachedEspetroVehicleSupplyStationTick = Long.MIN_VALUE;
+    private final Map<String, BastionSyncState> tacticalStateByTeam = new HashMap<>();
+    private long tacticalStateRevision = Long.MIN_VALUE;
+    // 战术地图按需订阅：HUD/部署界面持续显示时由客户端每 4 秒续期。
+    private final Map<UUID, Long> tacticalMapSubscriptions = new HashMap<>();
+    private static final long TACTICAL_MAP_SUBSCRIPTION_TTL_TICKS = 120L;
     
-    // 存储玩家进入据点的时间，键为玩家UUID，值为进入时间（毫秒）
-    private final Map<UUID, Long> playerEnterTime = new ConcurrentHashMap<>();
+    // 玩家进入某据点的时间：UUID -> (据点名 -> 进入时刻 ms)。禁止跨据点互清。
+    private final Map<UUID, Map<String, Long>> playerEnterTimeByPoint = new ConcurrentHashMap<>();
     
     // 存储据点占领信息，键为据点名称，值为占领信息对象
     private final Map<String, CapturedInfo> capturedInfoMap = new ConcurrentHashMap<>();
@@ -60,9 +72,12 @@ public class CapturePointManager {
     // 存储据点失去占领状态的时间，用于防止刷分，键为据点名称，值为失去占领状态的时间（毫秒）
     private final Map<String, Long> lastLostCaptureTime = new ConcurrentHashMap<>();
     
-    // 检查间隔计数器（每40tick检查一次，即每2秒，占领一个点需要40秒）
-    private int tickCounter = 0;
+    // 据点状态检查间隔（2s）
+    private int captureCheckTimer = 0;
     private static final int CHECK_INTERVAL = 40;
+    // 无状态变化时全量同步的兜底间隔（约 4s，独立于 captureCheckTimer）
+    private int captureSyncFallbackTimer = 0;
+    private static final int CAPTURE_SYNC_FALLBACK_INTERVAL = 80;
     
     // 行动攻防机制相关字段
     private int currentBatch = 1; // 当前批次
@@ -75,10 +90,14 @@ public class CapturePointManager {
     private final Map<CapturePoint, Long> progressRecoveryTimers = new ConcurrentHashMap<>(); // 进度恢复计时器
     private final Map<String, CapturePoint.SerializableCapturePoint> operationPointSnapshots = new ConcurrentHashMap<>(); // 行动模式非当前批次据点的最终显示状态
     
-    // 玩家位置同步计时器
+    // 位置同步：与兵站解耦；客户端插值可承受 0.5s
     private int playerPositionSyncTimer = 0;
-    private static final int PLAYER_POSITION_SYNC_INTERVAL = 20; // 每20tick同步一次（1秒）    
-    private static final int BATCH_COMPLETION_ATTACK_REINFORCEMENT = 200;
+    private static final int PLAYER_POSITION_SYNC_INTERVAL = 10;
+    // 兵站/基地/补给站：低频脏同步
+    private int bastionSyncTimer = 0;
+    private static final int BASTION_SYNC_INTERVAL = 40;
+    /** 进攻方占完当前批次全部据点时，通过 Espetro 增加的兵力；JSON 可配置。 */
+    private int attackBatchCompletionReinforcement = 200;
     private static final String ESPETRO_MOD_ID = "espetro";
     private static final String ESPETRO_TROOP_COUNT_MANAGER_CLASS = "org.espetro.team.TroopCountManager";
     private static final String ESPETRO_BASTION_MANAGER_CLASS = "org.espetro.bastion.BastionManager";
@@ -93,9 +112,7 @@ public class CapturePointManager {
     private static final String ESPETRO_VEHICLE_SUPPLY_STATION_Z_KEY = "espetro_vehicle_supply_station_z";
     private boolean espetroDeployingCapturePointsActivated = false;
     private boolean tacticalMarkersClearedForWaiting = false;
-
-    private record PlayerMetadata(String name, String teamName) {
-    }
+    private boolean battlefieldLifecycleActive;
 
     private record BastionSyncState(List<SyncBastionsMessage.BastionInfo> bastions,
                                     List<SyncBastionsMessage.BaseInfo> bases,
@@ -264,10 +281,102 @@ public class CapturePointManager {
     }
 
     public void resetTransientSyncCaches() {
-        lastBroadcastPlayerMetadata.clear();
+        tacticalPlayerIds.clear();
+        tacticalIdentityHashes.clear();
+        nextTacticalPlayerId = 1;
+        tacticalPositionSession++;
         lastBastionSyncByPlayer.clear();
-        cachedEspetroVehicleSupplyStations = List.of();
-        cachedEspetroVehicleSupplyStationTick = Long.MIN_VALUE;
+        tacticalStateByTeam.clear();
+        tacticalStateRevision = Long.MIN_VALUE;
+        tacticalMapSubscriptions.clear();
+    }
+
+    public void setTacticalMapSubscription(ServerPlayer player, boolean active) {
+        if (player == null) {
+            return;
+        }
+        UUID playerId = player.getUUID();
+        if (!active) {
+            tacticalMapSubscriptions.remove(playerId);
+            return;
+        }
+
+        MinecraftServer server = player.getServer();
+        if (server == null) {
+            return;
+        }
+        long currentTick = server.getTickCount();
+        Long previousExpiry = tacticalMapSubscriptions.get(playerId);
+        boolean newlySubscribed = previousExpiry == null || previousExpiry < currentTick;
+        tacticalMapSubscriptions.put(
+            playerId,
+            currentTick + TACTICAL_MAP_SUBSCRIPTION_TTL_TICKS);
+        // 首次打开立即获得完整快照，之后由阵营分组的周期包增量更新。
+        if (newlySubscribed) {
+            syncPlayerPositionsToPlayer(player);
+            syncEspetroBastionsToPlayer(player);
+        }
+    }
+
+    private boolean isTacticalMapSubscribed(ServerPlayer player, long currentTick) {
+        Long expiresAt = tacticalMapSubscriptions.get(player.getUUID());
+        if (expiresAt == null) {
+            return false;
+        }
+        if (expiresAt < currentTick) {
+            tacticalMapSubscriptions.remove(player.getUUID());
+            return false;
+        }
+        return true;
+    }
+
+    public void onBattlefieldActivated() {
+        if (battlefieldLifecycleActive) {
+            return;
+        }
+        battlefieldLifecycleActive = true;
+        espetroDeployingCapturePointsActivated = false;
+        tacticalMarkersClearedForWaiting = false;
+        resetTransientSyncCaches();
+        if (operationModeRunning) {
+            stopOperationMode();
+        } else {
+            clearAllCapturePoints();
+        }
+        clearPlannedCapturePoints();
+    }
+
+    public void onBattlefieldCleared() {
+        if (!battlefieldLifecycleActive) {
+            return;
+        }
+        battlefieldLifecycleActive = false;
+        espetroDeployingCapturePointsActivated = false;
+        tacticalMarkersClearedForWaiting = true;
+        if (operationModeRunning) {
+            stopOperationMode();
+        } else {
+            clearAllCapturePoints();
+            syncOperationModeToClients();
+        }
+        clearPlannedCapturePoints();
+        resetTransientSyncCaches();
+        com.example.espoints.tactical.TacticalMarkerManager.reset();
+    }
+
+    /** Starts the frozen per-map point plan exactly once for the deploying phase. */
+    public void onEspetroDeployingStarted() {
+        if (plannedPointsMap.isEmpty() || espetroDeployingCapturePointsActivated) {
+            return;
+        }
+        espetroDeployingCapturePointsActivated = true;
+        int detectedTotalBatches = Math.max(totalBatches, calculateTotalBatches());
+        if (detectedTotalBatches <= 0) {
+            return;
+        }
+        startOperationMode(detectedTotalBatches,
+            endBehavior == null || endBehavior.isEmpty() ? "terminate" : endBehavior);
+        ModLogger.info("Espetro 部署阶段开始，已显示当前地图的首批据点");
     }
     
     /**
@@ -303,6 +412,7 @@ public class CapturePointManager {
         try {
             CapturePoint removed = capturePoints.remove(name);
             if (removed != null) {
+                rebuildCapturePointSpatialIndex();
                 ModLogger.info("据点 " + name + " 已删除");
                 
                 // 同步到所有客户端
@@ -324,6 +434,7 @@ public class CapturePointManager {
     public void clearAllCapturePoints() {
         try {
             capturePoints.clear();
+            rebuildCapturePointSpatialIndex();
             ModLogger.info("所有据点已清空");
             
             // 同步到所有客户端
@@ -357,7 +468,7 @@ public class CapturePointManager {
      */
     public CapturePoint checkPlayerInCapturePoint(Player player) {
         BlockPos playerPos = player.blockPosition();
-        for (CapturePoint point : capturePoints.values()) {
+        for (CapturePoint point : capturePointSpatialIndex.candidates(playerPos)) {
             // 行动模式下只检查当前批次的据点
             if (operationModeRunning && point.getBatch() != currentBatch) {
                 continue;
@@ -615,7 +726,11 @@ public class CapturePointManager {
         long endTime = System.currentTimeMillis() + 4000;
         
         // 为胜利队伍和失败队伍的玩家设置HUD计时器
+        ServerLevel battlefield = EspetroAPI.getActiveBattlefieldLevel(server).orElse(null);
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (battlefield == null || player.serverLevel() != battlefield) {
+                continue;
+            }
             String playerTeamName = EspetroTeamBridge.getServerPlayerTeam(player);
             if (playerTeamName == null) {
                 continue;
@@ -724,6 +839,7 @@ public class CapturePointManager {
         }
         
         // 所有据点创建并设置完成后，统一同步到客户端
+        rebuildCapturePointSpatialIndex();
         syncToAllClients();
         
         ModLogger.info("已创建批次 " + currentBatch + " 的所有据点，共 " + createdCount + " 个");
@@ -855,6 +971,18 @@ public class CapturePointManager {
     public String getEndBehavior() {
         return endBehavior;
     }
+
+    /**
+     * 进攻方占完当前批次全部据点时的兵力增援（Espetro TroopCount）。
+     * 来自 CapturePoints.json 的 attackBatchCompletionReinforcement，默认 200。
+     */
+    public void setAttackBatchCompletionReinforcement(int amount) {
+        this.attackBatchCompletionReinforcement = Math.max(0, amount);
+    }
+
+    public int getAttackBatchCompletionReinforcement() {
+        return attackBatchCompletionReinforcement;
+    }
     
     /**
      * 从计划据点中计算总批次数量
@@ -908,9 +1036,13 @@ public class CapturePointManager {
         
         // 如果所有据点都被进攻方占领，处理批次推进或结束
         if (allCapturedByAttacker) {
-            // 每完成一个批次，给进攻方增加200兵力
-            if (grantEspetroAttackReinforcement(BATCH_COMPLETION_ATTACK_REINFORCEMENT)) {
-                ModLogger.info("批次 " + currentBatch + " 完成，已通过 Espetro 兵力接口为进攻方增加 " + BATCH_COMPLETION_ATTACK_REINFORCEMENT + " 兵力");
+            // 每完成一个批次，给进攻方增加配置的兵力（CapturePoints.json）
+            int batchReward = Math.max(0, attackBatchCompletionReinforcement);
+            if (batchReward > 0 && grantEspetroAttackReinforcement(batchReward)) {
+                ModLogger.info("批次 " + currentBatch + " 完成，已通过 Espetro 兵力接口为进攻方增加 "
+                    + batchReward + " 兵力");
+            } else if (batchReward <= 0) {
+                ModLogger.info("批次 " + currentBatch + " 完成，attackBatchCompletionReinforcement=0，跳过兵力增援");
             } else {
                 ModLogger.info("批次 " + currentBatch + " 完成，未检测到 Espetro，跳过进攻方兵力增援");
             }
@@ -919,9 +1051,14 @@ public class CapturePointManager {
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
                 String playerTeam = EspetroTeamBridge.getServerPlayerTeam(player);
                 if (attackerTeam.equals(playerTeam)) {
-                    String reinforcementText = ModList.get().isLoaded(ESPETRO_MOD_ID)
-                            ? "进攻方获得 " + BATCH_COMPLETION_ATTACK_REINFORCEMENT + " 兵力增援！"
-                            : "未安装 Espetro，跳过兵力增援。";
+                    String reinforcementText;
+                    if (!ModList.get().isLoaded(ESPETRO_MOD_ID)) {
+                        reinforcementText = "未安装 Espetro，跳过兵力增援。";
+                    } else if (batchReward <= 0) {
+                        reinforcementText = "本批次无兵力增援（配置为 0）。";
+                    } else {
+                        reinforcementText = "进攻方获得 " + batchReward + " 兵力增援！";
+                    }
                     player.sendSystemMessage(Component.literal("§6[据点] §e第 " + currentBatch + " 批次据点已全部占领！" + reinforcementText));
                 }
             }
@@ -1196,153 +1333,134 @@ public class CapturePointManager {
     }
     
     /**
-     * 更新所有据点的状态
-     * @param level 世界实例
+     * 更新所有据点的状态。
+     * 先单次扫描战场玩家再分配到各据点，避免 O(据点×全服玩家)。
      */
     public void updateAllCapturePoints(Level level) {
         try {
-            if (!(level instanceof ServerLevel)) return;
-            
-            MinecraftServer server = level.getServer();
-            if (server == null) return;
-            
-            boolean shouldSync = false;
-            
-            for (CapturePoint point : capturePoints.values()) {
-            // 获取在据点内的所有玩家，并过滤掉观众
-            List<ServerPlayer> playersInPoint = new ArrayList<>();
+            if (!(level instanceof ServerLevel serverLevel)) return;
+
+            MinecraftServer server = serverLevel.getServer();
+            if (server == null || capturePoints.isEmpty()) return;
+
+            Map<String, List<ServerPlayer>> playersByPoint = new HashMap<>();
+            for (String name : capturePoints.keySet()) {
+                playersByPoint.put(name, new ArrayList<>());
+            }
+
+            long now = System.currentTimeMillis();
+            long pointRewardIntervalMs = ModConfig.pointRewardInterval.get() * 1000L;
+            int rewardAmount = ModConfig.pointRewardAmount.get();
+            Set<UUID> playersInAnyPoint = new HashSet<>();
+
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                if (point.isPositionInside(player.blockPosition())) {
-                    // 只有 Espetro 攻防阵营玩家参与占领，其他玩家视为观战者。
-                    if (!isPlayerInTeam(player)) {
+                if (player.serverLevel() != serverLevel || !isPlayerInTeam(player)) {
+                    continue;
+                }
+                BlockPos pos = player.blockPosition();
+                UUID playerUUID = player.getUUID();
+                Map<String, Long> enterByPoint = playerEnterTimeByPoint
+                    .computeIfAbsent(playerUUID, ignored -> new ConcurrentHashMap<>());
+                Set<String> stillInside = new HashSet<>();
+
+                for (CapturePoint point : capturePointSpatialIndex.candidates(pos)) {
+                    if (!point.isPositionInside(pos)) {
                         continue;
                     }
-                    playersInPoint.add(player);
-                    
-                    // 记录玩家进入据点的时间
-                    UUID playerUUID = player.getUUID();
-                    if (!playerEnterTime.containsKey(playerUUID)) {
-                        playerEnterTime.put(playerUUID, System.currentTimeMillis());
-                    } else {
-                        // 检查是否需要给予奖励
-                        long enterTime = playerEnterTime.get(playerUUID);
-                        long currentTime = System.currentTimeMillis();
-                        long interval = ModConfig.pointRewardInterval.get() * 1000L; // 转换为毫秒
-                        
-                        if (currentTime - enterTime >= interval) {
-                            // 给予玩家奖励
-                            int rewardAmount = ModConfig.pointRewardAmount.get();
-                            addPointsToPlayer(player, rewardAmount, "据点奖励");
-                            
-                            // 更新进入时间
-                            playerEnterTime.put(playerUUID, currentTime);
-                        }
+                    playersByPoint.get(point.getName()).add(player);
+                    playersInAnyPoint.add(playerUUID);
+                    stillInside.add(point.getName());
+
+                    long enterTime = enterByPoint.getOrDefault(point.getName(), now);
+                    if (!enterByPoint.containsKey(point.getName())) {
+                        enterByPoint.put(point.getName(), now);
+                        enterTime = now;
                     }
-                } else {
-                    // 玩家不在据点内，移除进入时间记录
-                    playerEnterTime.remove(player.getUUID());
+                    if (now - enterTime >= pointRewardIntervalMs) {
+                        addPointsToPlayer(player, rewardAmount, "据点奖励");
+                        enterByPoint.put(point.getName(), now);
+                    }
+                }
+                enterByPoint.keySet().removeIf(pointName -> !stillInside.contains(pointName));
+                if (enterByPoint.isEmpty()) {
+                    playerEnterTimeByPoint.remove(playerUUID);
                 }
             }
-            
-            // 保存更新前的状态
-            CaptureState oldState = point.getState();
-            int oldProgress = point.getProgress();
-            String oldCaptorName = point.getCaptorName();
-            
-            // 更新据点状态
-            point.updateStatus(playersInPoint);
-            
-            // 进度现在完全由点内双方人数优势推动，旧的争夺后自动回满计时器只做清理。
-            progressRecoveryTimers.remove(point);
-            
-            // 检查状态是否发生变化
-                if (oldState != point.getState() || 
-                    oldProgress != point.getProgress() || 
-                    !oldCaptorName.equals(point.getCaptorName())) {
-                    shouldSync = true; // 状态发生变化，需要同步
-                    
-                    // 检查是否是据点被占领的事件
+
+            playerEnterTimeByPoint.keySet().removeIf(uuid -> !playersInAnyPoint.contains(uuid));
+
+            boolean shouldSync = false;
+            for (CapturePoint point : capturePoints.values()) {
+                List<ServerPlayer> playersInPoint = playersByPoint.getOrDefault(point.getName(), List.of());
+
+                CaptureState oldState = point.getState();
+                int oldProgress = point.getProgress();
+                String oldCaptorName = point.getCaptorName();
+
+                point.updateStatus(playersInPoint);
+                progressRecoveryTimers.remove(point);
+
+                if (oldState != point.getState()
+                        || oldProgress != point.getProgress()
+                        || !oldCaptorName.equals(point.getCaptorName())) {
+                    shouldSync = true;
+
                     if (oldState != CaptureState.CAPTURED && point.getState() == CaptureState.CAPTURED) {
-                        // 据点被占领，给予玩家奖励
                         String captorName = point.getCaptorName();
                         if (captorName != null && !captorName.isEmpty()) {
                             ModLogger.info("占领者 " + captorName + " 占领据点 " + point.getName());
-                            
-                            // 检查是否是刷分操作：如果据点脱离已占领状态3秒内又回到已占领状态，不给予奖励
                             long scoreSpamCheckTime = System.currentTimeMillis();
                             Long lastLostTime = lastLostCaptureTime.get(point.getName());
-                            boolean isScoreSpam = false;
-                            if (lastLostTime != null) {
-                                long timeDiff = scoreSpamCheckTime - lastLostTime;
-                                if (timeDiff < 3000) { // 3秒内
-                                    isScoreSpam = true;
-                                    ModLogger.info("检测到刷分操作，不给予占领奖励：" + point.getName());
-                                }
-                            }
-                            
-                            // 只有非刷分操作才给予奖励
-                            if (!isScoreSpam) {
+                            boolean isScoreSpam = lastLostTime != null
+                                && scoreSpamCheckTime - lastLostTime < 3000;
+                            if (isScoreSpam) {
+                                ModLogger.info("检测到刷分操作，不给予占领奖励：" + point.getName());
+                            } else {
                                 giveCaptureReward(server, captorName, point.getName());
                             }
-                            
-                            // 记录占领信息
                             capturedInfoMap.put(point.getName(), new CapturedInfo(captorName, scoreSpamCheckTime));
-                            // 清除失去占领状态的时间记录
                             lastLostCaptureTime.remove(point.getName());
                         }
                     } else if (oldState == CaptureState.CAPTURED && point.getState() != CaptureState.CAPTURED) {
-                        // 据点失去占领状态，记录失去占领状态的时间，用于防止刷分
                         lastLostCaptureTime.put(point.getName(), System.currentTimeMillis());
-                        // 移除占领信息
                         capturedInfoMap.remove(point.getName());
-                    } else if (point.getState() == CaptureState.CAPTURED && !oldCaptorName.equals(point.getCaptorName())) {
-                        // 占领者变更，更新占领信息
+                    } else if (point.getState() == CaptureState.CAPTURED
+                            && !oldCaptorName.equals(point.getCaptorName())) {
                         String captorName = point.getCaptorName();
                         if (captorName != null && !captorName.isEmpty()) {
-                            capturedInfoMap.put(point.getName(), new CapturedInfo(captorName, System.currentTimeMillis()));
-                            // 清除失去占领状态的时间记录
+                            capturedInfoMap.put(point.getName(),
+                                new CapturedInfo(captorName, System.currentTimeMillis()));
                             lastLostCaptureTime.remove(point.getName());
                         }
                     }
                 }
-                
-                // 处理占领状态的持续奖励
+
                 if (point.getState() == CaptureState.CAPTURED) {
                     String captorName = point.getCaptorName();
                     if (captorName != null && !captorName.isEmpty()) {
                         long rewardCheckTime = System.currentTimeMillis();
                         long delay = ModConfig.capturedRewardDelay.get() * 1000L;
                         long interval = ModConfig.capturedRewardInterval.get() * 1000L;
-                        
-                        // 获取或创建占领信息
-                        CapturedInfo capturedInfo = capturedInfoMap.computeIfAbsent(point.getName(), 
+                        CapturedInfo capturedInfo = capturedInfoMap.computeIfAbsent(point.getName(),
                             k -> new CapturedInfo(captorName, rewardCheckTime));
-                        
-                        // 检查是否满足奖励条件
-                        if (rewardCheckTime - capturedInfo.getCaptureTime() >= delay && 
-                            rewardCheckTime - capturedInfo.getLastRewardTime() >= interval) {
-                            // 给予占领者持续奖励
+                        if (rewardCheckTime - capturedInfo.getCaptureTime() >= delay
+                                && rewardCheckTime - capturedInfo.getLastRewardTime() >= interval) {
                             giveCapturedReward(server, captorName, point.getName());
-                            
-                            // 更新最后奖励时间
                             capturedInfo.setLastRewardTime(rewardCheckTime);
                         }
                     }
                 } else {
-                    // 据点不再被占领，移除占领信息
                     capturedInfoMap.remove(point.getName());
                 }
             }
-            
-            // 行动模式下，检查是否需要进入下一批次
+
             if (isOperationModeRunning()) {
                 checkBatchProgression(server);
             }
-            
-            // 如果状态发生变化或每隔一定时间，同步据点状态
-            if (shouldSync || ++tickCounter % 40 == 0) { // 状态变化时立即同步，或每2秒定期同步
+
+            if (shouldSync || ++captureSyncFallbackTimer >= CAPTURE_SYNC_FALLBACK_INTERVAL) {
                 syncToAllClients();
-                tickCounter = 0;
+                captureSyncFallbackTimer = 0;
             }
         } catch (Exception e) {
             ModLogger.error("更新据点状态时发生异常: " + e.getMessage());
@@ -1385,7 +1503,6 @@ public class CapturePointManager {
                 }
                 SyncCapturePointsMessage.sendToPlayer(player, points);
             }
-            com.example.espoints.network.SyncCapturePointOverviewMessage.broadcastToAll(getOverviewSerializablePoints());
         } catch (Exception e) {
             ModLogger.error("同步据点数据到所有客户端时发生异常: " + e.getMessage());
         }
@@ -1555,102 +1672,142 @@ public class CapturePointManager {
      * 从服务器同步据点数据（完全替换）
      * @param serializedPoints 序列化的据点列表
      */
+    @Deprecated(forRemoval = false)
     public void syncFromServer(List<CapturePoint.SerializableCapturePoint> serializedPoints) {
-        // 确保只在客户端调用
-        if (ESPointsMod.isServerRunning()) {
-            ModLogger.warn("尝试在服务器端调用客户端同步方法，忽略");
-            return;
-        }
-        
-        try {
-            // 清空现有据点
-            capturePoints.clear();
-            
-            // 重建据点数据
-            for (CapturePoint.SerializableCapturePoint sp : serializedPoints) {
-                CapturePoint point = new CapturePoint(sp.name, sp.pos1, sp.pos2, sp.batch);
-                point.restoreFromSerializable(sp);
-                capturePoints.put(sp.name, point);
-            }
-            
-            ModLogger.info("客户端据点数据已同步，共 " + capturePoints.size() + " 个据点");
-        } catch (Exception e) {
-            ModLogger.error("客户端据点数据同步失败: " + e.getMessage());
-            e.printStackTrace();
-        }
+        com.example.espoints.client.ClientBattleState.get()
+            .replaceCapturePoints(serializedPoints);
+    }
+
+    private void rebuildCapturePointSpatialIndex() {
+        capturePointSpatialIndex.rebuild(capturePoints.values());
     }
     
     /**
      * 更新客户端据点数据（增量更新）
      * @param serializedPoints 序列化的据点列表
      */
+    @Deprecated(forRemoval = false)
     public void updateCapturePoints(List<CapturePoint.SerializableCapturePoint> serializedPoints) {
-        // 确保只在客户端调用
-        if (ESPointsMod.isServerRunning()) {
-            ModLogger.warn("尝试在服务器端调用客户端更新方法，忽略");
-            return;
-        }
-        
-        try {
-            // 更新现有据点或添加新据点
-            for (CapturePoint.SerializableCapturePoint sp : serializedPoints) {
-                CapturePoint point = capturePoints.get(sp.name);
-                if (point != null) {
-                    // 更新现有据点状态
-                    point.restoreFromSerializable(sp);
-                } else {
-                    // 添加新的据点
-                    point = new CapturePoint(sp.name, sp.pos1, sp.pos2, sp.batch);
-                    point.restoreFromSerializable(sp);
-                    capturePoints.put(sp.name, point);
-                }
-            }
-            
-            ModLogger.info("客户端据点数据已更新，共 " + capturePoints.size() + " 个据点");
-        } catch (Exception e) {
-            ModLogger.error("客户端据点数据更新失败: " + e.getMessage());
-            e.printStackTrace();
-        }
+        com.example.espoints.client.ClientBattleState.get()
+            .replaceCapturePoints(serializedPoints);
     }
     
 
     
     /**
-     * 同步玩家位置到客户端
+     * 同步玩家位置到战场客户端（不含兵站同步，兵站见 {@link #syncBastionsToBattlefieldPlayers}）。
      */
     private void syncPlayerPositions() {
         MinecraftServer server = ESPointsMod.getServer();
         if (server == null) {
             return;
         }
-        
-        // 收集所有在线玩家的位置
-        Map<UUID, com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition> positions = new HashMap<>();
-        
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            UUID playerUUID = player.getUUID();
-            String playerName = player.getName().getString();
-            String teamName = Optional.ofNullable(EspetroTeamBridge.getServerPlayerTeam(player)).orElse("");
-            syncMapDataIfPlayerTeamChanged(player, teamName);
-            syncEspetroBastionsToPlayer(player);
 
-            PlayerMetadata metadata = new PlayerMetadata(playerName, teamName);
-            boolean includeMetadata = !metadata.equals(lastBroadcastPlayerMetadata.put(playerUUID, metadata));
-            
-            // 创建玩家位置对象
-            com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = includeMetadata
-                ? new com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition(
-                    player.getX(), player.getY(), player.getZ(), playerName, teamName, player.getYRot())
-                : com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition.positionOnly(
-                    player.getX(), player.getY(), player.getZ(), player.getYRot());
-            
-            positions.put(playerUUID, pos);
+        ServerLevel battlefield = EspetroAPI.getActiveBattlefieldLevel(server).orElse(null);
+        if (battlefield == null) {
+            return;
         }
 
-        lastBroadcastPlayerMetadata.keySet().retainAll(positions.keySet());
-        
-        // 发送到所有客户端
-        com.example.espoints.network.SyncPlayerPositionsMessage.broadcastToAll(positions);
+        long currentTick = server.getTickCount();
+        Map<String, List<ServerPlayer>> recipientsByTeam = new HashMap<>();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (player.serverLevel() != battlefield
+                    || !isTacticalMapSubscribed(player, currentTick)) {
+                continue;
+            }
+            String team = EspetroTeamBridge.canonicalizeTeamName(
+                EspetroTeamBridge.getServerPlayerTeam(player));
+            if (team != null) {
+                recipientsByTeam.computeIfAbsent(team, ignored -> new ArrayList<>()).add(player);
+            }
+        }
+        if (recipientsByTeam.isEmpty()) {
+            return;
+        }
+
+        Map<String, Map<Integer, SyncPlayerPositionsMessage.PlayerPosition>>
+            positionsByTeam = new HashMap<>();
+        Map<String, List<SyncPlayerIdentityMessage.Identity>> identitiesByTeam = new HashMap<>();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (player.serverLevel() != battlefield) {
+                continue;
+            }
+            if (!EspetroTeamBridge.isPlayerVisibleOnTacticalMap(player)) {
+                continue;
+            }
+            UUID playerUUID = player.getUUID();
+            String playerName = player.getName().getString();
+            String teamName = EspetroTeamBridge.canonicalizeTeamName(
+                EspetroTeamBridge.getServerPlayerTeam(player));
+            if (teamName == null || !recipientsByTeam.containsKey(teamName)) {
+                continue;
+            }
+            syncMapDataIfPlayerTeamChanged(player, teamName);
+
+            int squadId = EspetroTeamBridge.getPlayerSquadId(player);
+            boolean squadLeader = EspetroTeamBridge.isSquadLeaderPublic(player);
+            boolean commander = EspetroTeamBridge.isCommander(player);
+            int shortId = tacticalPlayerId(playerUUID);
+            MapPositionSample sample = samplePlayerMapPosition(player);
+            SyncPlayerPositionsMessage.PlayerPosition pos =
+                SyncPlayerPositionsMessage.PlayerPosition.positionOnly(
+                    sample.x, sample.y, sample.z, sample.yaw);
+            positionsByTeam.computeIfAbsent(teamName, ignored -> new HashMap<>())
+                .put(shortId, pos);
+            identitiesByTeam.computeIfAbsent(teamName, ignored -> new ArrayList<>())
+                .add(new SyncPlayerIdentityMessage.Identity(
+                    shortId, playerUUID, playerName, teamName, squadId,
+                    squadLeader, commander));
+        }
+
+        // 服务端直接按阵营裁剪，客户端不会再收到敌方或主城玩家的位置。
+        for (Map.Entry<String, List<ServerPlayer>> entry : recipientsByTeam.entrySet()) {
+            List<SyncPlayerIdentityMessage.Identity> identities =
+                identitiesByTeam.getOrDefault(entry.getKey(), List.of()).stream()
+                    .sorted(Comparator.comparingInt(SyncPlayerIdentityMessage.Identity::shortId))
+                    .toList();
+            int identityHash = identities.hashCode();
+            if (!Objects.equals(
+                    tacticalIdentityHashes.put(entry.getKey(), identityHash), identityHash)) {
+                SyncPlayerIdentityMessage.sendToPlayers(
+                    entry.getValue(), tacticalPositionSession, identities);
+            }
+            SyncPlayerPositionsMessage.sendToPlayers(
+                entry.getValue(), tacticalPositionSession,
+                positionsByTeam.getOrDefault(entry.getKey(), Map.of()));
+        }
+    }
+
+    /** 低频脏同步兵站/基地/补给站（与位置包解耦）。 */
+    private void syncBastionsToBattlefieldPlayers() {
+        MinecraftServer server = ESPointsMod.getServer();
+        if (server == null) {
+            return;
+        }
+        ServerLevel battlefield = EspetroAPI.getActiveBattlefieldLevel(server).orElse(null);
+        if (battlefield == null) {
+            return;
+        }
+        long currentTick = server.getTickCount();
+        Map<String, List<ServerPlayer>> recipientsByTeam = new HashMap<>();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (player.serverLevel() != battlefield
+                    || !isTacticalMapSubscribed(player, currentTick)) {
+                continue;
+            }
+            String team = getVisibleEspetroBastionTeam(player);
+            if (team != null && !team.isEmpty()) {
+                recipientsByTeam.computeIfAbsent(team, ignored -> new ArrayList<>()).add(player);
+            }
+        }
+
+        // 同阵营看到的兵站、基地和补给站完全一致，每个阵营只构造一次快照。
+        for (List<ServerPlayer> recipients : recipientsByTeam.values()) {
+            BastionSyncState state = createBastionSyncState(recipients.get(0));
+            for (ServerPlayer player : recipients) {
+                sendBastionStateToPlayer(player, state);
+            }
+        }
     }
     
     /**
@@ -1664,55 +1821,174 @@ public class CapturePointManager {
             return;
         }
         
-        // 收集所有在线玩家的位置
-        Map<UUID, com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition> positions = new HashMap<>();
-        
-        for (ServerPlayer onlinePlayer : server.getPlayerList().getPlayers()) {
-            UUID playerUUID = onlinePlayer.getUUID();
-            String playerName = onlinePlayer.getName().getString();
-            String teamName = Optional.ofNullable(EspetroTeamBridge.getServerPlayerTeam(onlinePlayer)).orElse("");
-            
-            // 创建玩家位置对象
-            com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition pos = new com.example.espoints.network.SyncPlayerPositionsMessage.PlayerPosition(
-                onlinePlayer.getX(),
-                onlinePlayer.getY(),
-                onlinePlayer.getZ(),
-                playerName,
-                teamName,
-                onlinePlayer.getYRot()
-            );
-            
-            positions.put(playerUUID, pos);
-        }
-        
-        // 向指定玩家发送位置数据
-        com.example.espoints.network.NetworkHandler.INSTANCE.send(
-            net.minecraftforge.network.PacketDistributor.PLAYER.with(() -> player),
-            new com.example.espoints.network.SyncPlayerPositionsMessage(positions)
-        );
-        
-        ModLogger.info("已向玩家 " + player.getName().getString() + " 发送所有在线玩家位置数据");
-    }
-
-    private void syncEspetroBastionsToPlayer(ServerPlayer player) {
-        List<SyncBastionsMessage.BastionInfo> bastions = getVisibleEspetroBastions(player);
-        List<SyncBastionsMessage.BaseInfo> bases = getVisibleEspetroBases(player);
-        List<SyncBastionsMessage.VehicleSupplyStationInfo> vehicleSupplyStations =
-            getVisibleEspetroVehicleSupplyStations(player);
-        BastionSyncState previous = lastBastionSyncByPlayer.get(player.getUUID());
-        if (previous != null
-                && previous.bastions().equals(bastions)
-                && previous.bases().equals(bases)
-                && previous.vehicleSupplyStations().equals(vehicleSupplyStations)) {
+        ServerLevel battlefield = EspetroAPI.getActiveBattlefieldLevel(server).orElse(null);
+        if (battlefield == null || player.serverLevel() != battlefield
+                || !isTacticalMapSubscribed(player, server.getTickCount())) {
             return;
         }
 
-        lastBastionSyncByPlayer.put(player.getUUID(),
-            new BastionSyncState(
-                List.copyOf(bastions),
-                List.copyOf(bases),
-                List.copyOf(vehicleSupplyStations)));
-        SyncBastionsMessage.sendToPlayer(player, bastions, bases, vehicleSupplyStations);
+        String viewerTeam = EspetroTeamBridge.canonicalizeTeamName(
+            EspetroTeamBridge.getServerPlayerTeam(player));
+        Map<Integer, SyncPlayerPositionsMessage.PlayerPosition> positions = new HashMap<>();
+        List<SyncPlayerIdentityMessage.Identity> identities = new ArrayList<>();
+        for (ServerPlayer onlinePlayer : server.getPlayerList().getPlayers()) {
+            String onlineTeam = EspetroTeamBridge.canonicalizeTeamName(
+                EspetroTeamBridge.getServerPlayerTeam(onlinePlayer));
+            if (viewerTeam == null || !viewerTeam.equals(onlineTeam)
+                    || onlinePlayer.serverLevel() != battlefield
+                    || !EspetroTeamBridge.isPlayerVisibleOnTacticalMap(onlinePlayer)) {
+                continue;
+            }
+            UUID playerUUID = onlinePlayer.getUUID();
+            String playerName = onlinePlayer.getName().getString();
+            String teamName = onlineTeam;
+            MapPositionSample sample = samplePlayerMapPosition(onlinePlayer);
+            int squadId = EspetroTeamBridge.getPlayerSquadId(onlinePlayer);
+            boolean squadLeader = EspetroTeamBridge.isSquadLeaderPublic(onlinePlayer);
+            boolean commander = EspetroTeamBridge.isCommander(onlinePlayer);
+
+            int shortId = tacticalPlayerId(playerUUID);
+            positions.put(shortId, SyncPlayerPositionsMessage.PlayerPosition.positionOnly(
+                sample.x, sample.y, sample.z, sample.yaw));
+            identities.add(new SyncPlayerIdentityMessage.Identity(
+                shortId, playerUUID, playerName, teamName, squadId,
+                squadLeader, commander));
+        }
+
+        identities.sort(Comparator.comparingInt(SyncPlayerIdentityMessage.Identity::shortId));
+        SyncPlayerIdentityMessage.sendToPlayer(
+            player, tacticalPositionSession, identities);
+        SyncPlayerPositionsMessage.sendToPlayers(
+            List.of(player), tacticalPositionSession, positions);
+        ModLogger.debug("已向玩家 " + player.getName().getString() + " 发送玩家位置快照，共 "
+            + positions.size() + " 人");
+    }
+
+    private int tacticalPlayerId(UUID playerId) {
+        Integer existing = tacticalPlayerIds.get(playerId);
+        if (existing != null) {
+            return existing;
+        }
+        if (nextTacticalPlayerId > 0xffff) {
+            tacticalPlayerIds.clear();
+            tacticalIdentityHashes.clear();
+            nextTacticalPlayerId = 1;
+            tacticalPositionSession++;
+        }
+        int assigned = nextTacticalPlayerId++;
+        tacticalPlayerIds.put(playerId, assigned);
+        return assigned;
+    }
+
+    /**
+     * 采样战术地图用玩家位置。乘车时取根载具坐标，避免乘客座位贴合抖动；朝向仍用玩家自身。
+     */
+    private static MapPositionSample samplePlayerMapPosition(ServerPlayer player) {
+        Entity body = player.getRootVehicle();
+        if (body == null) {
+            body = player;
+        }
+        return new MapPositionSample(body.getX(), body.getY(), body.getZ(), player.getYRot());
+    }
+
+    private static final class MapPositionSample {
+        private final double x;
+        private final double y;
+        private final double z;
+        private final float yaw;
+
+        private MapPositionSample(double x, double y, double z, float yaw) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+        }
+    }
+
+    private void syncEspetroBastionsToPlayer(ServerPlayer player) {
+        sendBastionStateToPlayer(player, createBastionSyncState(player));
+    }
+
+    private BastionSyncState createBastionSyncState(ServerPlayer player) {
+        TacticalMapStateSnapshot snapshot = EspetroAPI.getTacticalMapStateSnapshot();
+        if (snapshot.revision() != tacticalStateRevision) {
+            tacticalStateRevision = snapshot.revision();
+            tacticalStateByTeam.clear();
+        }
+        String team = getVisibleEspetroBastionTeam(player);
+        String dimension = player.serverLevel().dimension().location().toString();
+        if (team == null || team.isBlank()) {
+            return new BastionSyncState(List.of(), List.of(), List.of());
+        }
+        String cacheKey = team + "\n" + dimension;
+        BastionSyncState shared = tacticalStateByTeam.computeIfAbsent(
+            cacheKey, ignored -> createSharedTacticalState(snapshot, team, dimension));
+
+        List<SyncBastionsMessage.BaseInfo> bases = new ArrayList<>(shared.bases());
+        snapshot.playerDeployPoints().stream()
+            .filter(point -> player.getUUID().equals(point.playerId())
+                && dimension.equals(point.dimension()))
+            .findFirst()
+            .ifPresent(point -> bases.add(new SyncBastionsMessage.BaseInfo(
+                "原部署点", team, new BlockPos(point.x(), point.y(), point.z()), 0.0F)));
+        return new BastionSyncState(
+            shared.bastions(), List.copyOf(bases), shared.vehicleSupplyStations());
+    }
+
+    private BastionSyncState createSharedTacticalState(
+            TacticalMapStateSnapshot snapshot, String team, String dimension) {
+        List<SyncBastionsMessage.BastionInfo> bastions = new ArrayList<>();
+        for (EspetroAPI.FobSnapshot structure : snapshot.structures()) {
+            if (!team.equals(structure.team()) || !dimension.equals(structure.dimension())) {
+                continue;
+            }
+            String kind = structure.type().toUpperCase(Locale.ROOT);
+            if ("HAB".equals(kind) && !structure.radioCovered()) {
+                continue;
+            }
+            bastions.add(new SyncBastionsMessage.BastionInfo(
+                structure.name(), structure.team(),
+                new BlockPos(structure.x(), structure.y(), structure.z()),
+                kind, structure.construction(), structure.ammunition(),
+                structure.habOperational(), structure.buildRadius(),
+                structure.exclusionRadius(), 0L));
+        }
+        for (TacticalMapStateSnapshot.RallySnapshot rally : snapshot.rallies()) {
+            if (team.equals(rally.team()) && dimension.equals(rally.dimension())) {
+                bastions.add(new SyncBastionsMessage.BastionInfo(
+                    "Rally " + rally.squadId(), rally.team(),
+                    new BlockPos(rally.x(), rally.y(), rally.z()),
+                    "RALLY", 0, 0, true, 0.0D, 0.0D,
+                    rally.nextWaveAtMillis()));
+            }
+        }
+
+        List<SyncBastionsMessage.BaseInfo> bases = snapshot.teamBases().stream()
+            .filter(base -> team.equals(base.team()) && dimension.equals(base.dimension()))
+            .map(base -> new SyncBastionsMessage.BaseInfo(
+                base.name(), base.team(), new BlockPos(base.x(), base.y(), base.z()), base.yaw()))
+            .toList();
+        List<SyncBastionsMessage.VehicleSupplyStationInfo> stations =
+            snapshot.vehicleSupplyStations().stream()
+                .filter(station -> team.equals(station.team())
+                    && dimension.equals(station.dimension()))
+                .map(station -> new SyncBastionsMessage.VehicleSupplyStationInfo(
+                    station.name(), station.team(),
+                    new BlockPos(station.x(), station.y(), station.z())))
+                .toList();
+        return new BastionSyncState(
+            List.copyOf(bastions), List.copyOf(bases), List.copyOf(stations));
+    }
+
+    private void sendBastionStateToPlayer(ServerPlayer player, BastionSyncState state) {
+        BastionSyncState previous = lastBastionSyncByPlayer.get(player.getUUID());
+        if (state.equals(previous)) {
+            return;
+        }
+
+        lastBastionSyncByPlayer.put(player.getUUID(), state);
+        SyncBastionsMessage.sendToPlayer(
+            player, state.bastions(), state.bases(), state.vehicleSupplyStations());
     }
 
     private List<SyncBastionsMessage.BastionInfo> getVisibleEspetroBastions(ServerPlayer player) {
@@ -1759,9 +2035,15 @@ public class CapturePointManager {
                     continue;
                 }
 
+                boolean isHab = invokeOptionalBooleanGetter(bastion, "isHab", false);
+                if (isHab && !invokeOptionalBooleanGetter(
+                    bastion, "isHabCoveredCache", true)) {
+                    continue;
+                }
+
                 String name = (String) bastion.getClass().getMethod("getName").invoke(bastion);
                 visibleBastions.add(new SyncBastionsMessage.BastionInfo(
-                    name, bastionTeam, pos, "FOB",
+                    name, bastionTeam, pos, isHab ? "HAB" : "RADIO",
                     invokeOptionalIntGetter(bastion, "getConstructionSupplies"),
                     invokeOptionalIntGetter(bastion, "getAmmunitionSupplies"),
                     invokeOptionalBooleanGetter(bastion, "isHabBuilt", true),
@@ -1789,11 +2071,27 @@ public class CapturePointManager {
                 || !dimension.equals(invokeString(snapshot, "dimension"))) {
                 continue;
             }
+            String kind = invokeOptionalString(snapshot, "kind");
+            if (kind == null || kind.isBlank()) {
+                kind = invokeOptionalString(snapshot, "type");
+            }
+            if (kind == null || kind.isBlank()) {
+                // 旧 Espetro：无 kind 字段时按 habBuilt 粗分
+                kind = invokeOptionalBoolean(snapshot, "habBuilt") ? "HAB" : "RADIO";
+            }
+            if ("FOB".equalsIgnoreCase(kind)) {
+                kind = "RADIO";
+            }
+            if ("HAB".equalsIgnoreCase(kind)
+                && !invokeOptionalBoolean(snapshot, "radioCovered", true)) {
+                // 失去己方 Radio 建造范围覆盖的兵站不应继续暴露在战术地图上。
+                continue;
+            }
             output.add(new SyncBastionsMessage.BastionInfo(
                 invokeString(snapshot, "name"),
                 invokeString(snapshot, "team"),
                 new BlockPos(invokeInt(snapshot, "x"), invokeInt(snapshot, "y"), invokeInt(snapshot, "z")),
-                "FOB",
+                kind.toUpperCase(java.util.Locale.ROOT),
                 invokeInt(snapshot, "construction"),
                 invokeInt(snapshot, "ammunition"),
                 invokeBoolean(snapshot, "habOperational"),
@@ -1825,13 +2123,37 @@ public class CapturePointManager {
                 invokeString(snapshot, "team"),
                 new BlockPos(invokeInt(snapshot, "x"), invokeInt(snapshot, "y"), invokeInt(snapshot, "z")),
                 "RALLY", 0, 0, true, 0.0, 0.0,
-                ((Number) snapshot.getClass().getMethod("nextWaveSeconds").invoke(snapshot)).longValue()
+                System.currentTimeMillis()
+                    + ((Number) snapshot.getClass().getMethod("nextWaveSeconds")
+                    .invoke(snapshot)).longValue() * 1000L
             ));
         }
     }
 
     private String invokeString(Object target, String name) throws ReflectiveOperationException {
         return String.valueOf(target.getClass().getMethod(name).invoke(target));
+    }
+
+    @javax.annotation.Nullable
+    private String invokeOptionalString(Object target, String name) {
+        try {
+            Object value = target.getClass().getMethod(name).invoke(target);
+            return value == null ? null : String.valueOf(value);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
+    private boolean invokeOptionalBoolean(Object target, String name) {
+        return invokeOptionalBoolean(target, name, false);
+    }
+
+    private boolean invokeOptionalBoolean(Object target, String name, boolean fallback) {
+        try {
+            return Boolean.TRUE.equals(target.getClass().getMethod(name).invoke(target));
+        } catch (ReflectiveOperationException ignored) {
+            return fallback;
+        }
     }
 
     private int invokeInt(Object target, String name) throws ReflectiveOperationException {
@@ -1941,51 +2263,22 @@ public class CapturePointManager {
 
     private List<SyncBastionsMessage.VehicleSupplyStationInfo> getAllEspetroVehicleSupplyStations(MinecraftServer server) {
         if (server == null) {
-            cachedEspetroVehicleSupplyStations = List.of();
-            cachedEspetroVehicleSupplyStationTick = Long.MIN_VALUE;
-            return cachedEspetroVehicleSupplyStations;
+            return List.of();
         }
 
-        long currentTick = server.getTickCount();
-        if (cachedEspetroVehicleSupplyStationTick == currentTick) {
-            return cachedEspetroVehicleSupplyStations;
-        }
-
-        Map<String, SyncBastionsMessage.VehicleSupplyStationInfo> stationsById = new LinkedHashMap<>();
-        for (ServerLevel level : server.getAllLevels()) {
-            for (Entity entity : level.getAllEntities()) {
-                if (entity == null
-                        || entity.isRemoved()
-                        || !isEspetroVehicleSupplyStationEntity(entity)) {
-                    continue;
-                }
-
-                String stationTeam = getEspetroVehicleSupplyStationTeam(entity);
-                if (stationTeam == null) {
-                    continue;
-                }
-
-                BlockPos pos = getEspetroVehicleSupplyStationPosition(entity);
-                String stationId = getEspetroVehicleSupplyStationId(entity);
-                String groupKey = stationId == null || stationId.isBlank()
-                    ? stationTeam + ":" + pos.asLong()
-                    : stationId;
-                stationsById.putIfAbsent(groupKey, new SyncBastionsMessage.VehicleSupplyStationInfo(
-                    getEspetroVehicleSupplyStationName(entity),
-                    stationTeam,
-                    pos
-                ));
-            }
-        }
-
-        List<SyncBastionsMessage.VehicleSupplyStationInfo> stations = new ArrayList<>(stationsById.values());
-        stations.sort(Comparator
-            .comparing(SyncBastionsMessage.VehicleSupplyStationInfo::getName)
-            .thenComparingInt(info -> info.getPos().getX())
-            .thenComparingInt(info -> info.getPos().getZ()));
-        cachedEspetroVehicleSupplyStations = List.copyOf(stations);
-        cachedEspetroVehicleSupplyStationTick = currentTick;
-        return cachedEspetroVehicleSupplyStations;
+        String activeDimension = EspetroAPI.getActiveBattlefieldDimension()
+            .map(key -> key.location().toString())
+            .orElse("");
+        return EspetroAPI.getTacticalMapStateSnapshot().vehicleSupplyStations().stream()
+            .filter(station -> activeDimension.equals(station.dimension()))
+            .map(station -> new SyncBastionsMessage.VehicleSupplyStationInfo(
+                station.name(), station.team(),
+                new BlockPos(station.x(), station.y(), station.z())))
+            .sorted(Comparator
+                .comparing(SyncBastionsMessage.VehicleSupplyStationInfo::getName)
+                .thenComparingInt(info -> info.getPos().getX())
+                .thenComparingInt(info -> info.getPos().getZ()))
+            .toList();
     }
 
     private boolean isEspetroVehicleSupplyStationEntity(Entity entity) {
@@ -2181,7 +2474,7 @@ public class CapturePointManager {
         return value instanceof Number number ? number.floatValue() : 0.0F;
     }
 
-    private String getVisibleEspetroBastionTeam(ServerPlayer player) throws ReflectiveOperationException {
+    private String getVisibleEspetroBastionTeam(ServerPlayer player) {
         return EspetroTeamBridge.getServerPlayerTeam(player);
     }
 
@@ -2270,9 +2563,6 @@ public class CapturePointManager {
             syncToClient(player);
             com.example.espoints.tactical.TacticalMarkerManager.sendTo(player);
             
-            // 立即向新登录的玩家同步所有玩家位置数据，解决中途加入玩家无法看到其他玩家的问题
-            syncPlayerPositionsToPlayer(player);
-            
             // 立即向新登录的玩家同步行动模式状态，确保新玩家获得最新的行动模式信息
             com.example.espoints.network.SyncOperationModeMessage.sendToPlayer(
                 player,
@@ -2299,11 +2589,13 @@ public class CapturePointManager {
     @SubscribeEvent
     public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
         Player player = event.getEntity();
+        com.example.espoints.network.RequestTacticalMapTileMessage.clearPlayer(player.getUUID());
+        com.example.espoints.network.RequestRateLimiter.clearPlayer(player.getUUID());
         playerNameMap.remove(player.getUUID());
         playerTeamNameMap.remove(player.getUUID());
-        playerEnterTime.remove(player.getUUID());
-        lastBroadcastPlayerMetadata.remove(player.getUUID());
+        playerEnterTimeByPoint.remove(player.getUUID());
         lastBastionSyncByPlayer.remove(player.getUUID());
+        tacticalMapSubscriptions.remove(player.getUUID());
     }
     
     /**
@@ -2339,87 +2631,36 @@ public class CapturePointManager {
             return;
         }
 
+        MinecraftServer server = ESPointsMod.getServer();
+        if (server == null || server.getPlayerList().getPlayers().isEmpty()) {
+            return;
+        }
+
+        Optional<ServerLevel> battlefield = EspetroAPI.getActiveBattlefieldLevel(server);
+        if (battlefield.isEmpty()) {
+            // 无活跃战场：只做标点清理（若有），不做位置/据点周期任务
+            com.example.espoints.tactical.TacticalMarkerManager.tick();
+            return;
+        }
+
         com.example.espoints.tactical.TacticalMarkerManager.tick();
 
-        updateCapturePointsForEspetroDeploying();
-
-        // 每隔CHECK_INTERVAL tick检查一次据点状态
-        if (++tickCounter >= CHECK_INTERVAL) {
-            tickCounter = 0;
-            
-            // 获取服务器实例
-            MinecraftServer server = ESPointsMod.getServer();
-            if (server != null) {
-                ServerLevel overworld = server.getLevel(ServerLevel.OVERWORLD);
-                if (overworld != null) {
-                    updateAllCapturePoints(overworld);
-                }
-            }
+        if (++captureCheckTimer >= CHECK_INTERVAL) {
+            captureCheckTimer = 0;
+            updateAllCapturePoints(battlefield.get());
         }
-        
-        // 每20tick（1秒）同步一次玩家位置和战术地图兵站信息
+
         if (++playerPositionSyncTimer >= PLAYER_POSITION_SYNC_INTERVAL) {
             playerPositionSyncTimer = 0;
             syncPlayerPositions();
         }
-    }
 
-    private void updateCapturePointsForEspetroDeploying() {
-        if (plannedPointsMap.isEmpty() || !ModList.get().isLoaded(ESPETRO_MOD_ID)) {
-            return;
-        }
-
-        String phaseName = getEspetroCurrentPhaseName();
-        if ("WAITING_FOR_PLAYERS".equals(phaseName)) {
-            espetroDeployingCapturePointsActivated = false;
-            if (!tacticalMarkersClearedForWaiting) {
-                com.example.espoints.tactical.TacticalMarkerManager.reset();
-                tacticalMarkersClearedForWaiting = true;
-            }
-            return;
-        }
-
-        tacticalMarkersClearedForWaiting = false;
-
-        if (!"DEPLOYING".equals(phaseName)) {
-            return;
-        }
-
-        if (espetroDeployingCapturePointsActivated) {
-            if (operationModeRunning && capturePoints.isEmpty()) {
-                createCurrentBatchPoints();
-                syncOperationModeToClients();
-            }
-            return;
-        }
-
-        espetroDeployingCapturePointsActivated = true;
-        if (!operationModeRunning) {
-            int plannedTotalBatches = calculateTotalBatches();
-            int detectedTotalBatches = Math.max(totalBatches, plannedTotalBatches);
-            if (detectedTotalBatches <= 0) {
-                return;
-            }
-            startOperationMode(detectedTotalBatches, endBehavior == null || endBehavior.isEmpty() ? "terminate" : endBehavior);
-            ModLogger.info("检测到 Espetro 进入部署阶段，已按 " + detectedTotalBatches + " 个批次自动显示当前批次据点");
-        } else if (capturePoints.isEmpty()) {
-            createCurrentBatchPoints();
-            syncOperationModeToClients();
-            ModLogger.info("检测到 Espetro 进入部署阶段，已同步当前批次据点");
+        if (++bastionSyncTimer >= BASTION_SYNC_INTERVAL) {
+            bastionSyncTimer = 0;
+            syncBastionsToBattlefieldPlayers();
         }
     }
 
-    private String getEspetroCurrentPhaseName() {
-        try {
-            Class<?> managerClass = Class.forName(ESPETRO_GAME_STATE_MANAGER_CLASS);
-            Object manager = managerClass.getMethod("getInstance").invoke(null);
-            Object phase = managerClass.getMethod("getCurrentPhase").invoke(manager);
-            return phase instanceof Enum<?> enumPhase ? enumPhase.name() : String.valueOf(phase);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-    
     /**
      * 处理玩家死亡事件，给予击杀者奖励或友军击杀惩罚，并扣除死亡玩家所在队伍的兵力
      */
@@ -2512,27 +2753,11 @@ public class CapturePointManager {
             return;
         }
         
-        try {
-            // 使用反射调用PlayerPointsAPI.removePoints方法
-            Class<?> apiClass = Class.forName("com.hcrzb.hcrzbshop.api.PlayerPointsAPI");
-            
-            // 调用不带reason参数的removePoints方法，根据API文档，这是唯一的removePoints方法
-            Method removePointsMethod = apiClass.getMethod("removePoints", Player.class, int.class);
-            boolean success = (Boolean) removePointsMethod.invoke(null, player, points);
-            
-            if (success) {
-                // 手动发送系统消息给玩家，告知扣分原因
-                player.sendSystemMessage(net.minecraft.network.chat.Component.literal("你因为" + reason + "被扣了" + points + "点！"));
-                ModLogger.info("为玩家 " + player.getName().getString() + " 扣除了 " + points + " 点数，原因：" + reason);
-            } else {
-                ModLogger.warn("为玩家 " + player.getName().getString() + " 扣除点数失败，原因：" + reason);
-            }
-        } catch (ClassNotFoundException e) {
-            ModLogger.warn("未找到HCRZBShop API类，确认已安装HCR ZB Shop模组");
-        } catch (NoSuchMethodException e) {
-            ModLogger.warn("未找到PlayerPointsAPI.removePoints方法: " + e.getMessage());
-        } catch (Exception e) {
-            ModLogger.warn("无法调用PlayerPointsAPI.removePoints: " + e.getMessage());
+        if (OptionalPointsIntegration.remove(player, points)) {
+            player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "你因为" + reason + "被扣了" + points + "点！"));
+            ModLogger.info("为玩家 " + player.getName().getString() + " 扣除了 "
+                + points + " 点数，原因：" + reason);
         }
     }
     
@@ -2549,7 +2774,6 @@ public class CapturePointManager {
         
         try {
             SyncCapturePointsMessage.sendToPlayer(player, getSerializablePointsForMap(player));
-            com.example.espoints.network.SyncCapturePointOverviewMessage.sendToPlayer(player, getOverviewSerializablePoints());
         } catch (Exception e) {
             ModLogger.error("同步据点数据到客户端时发生异常: " + e.getMessage());
         }
@@ -2661,32 +2885,9 @@ public class CapturePointManager {
             return;
         }
         
-        try {
-            // 使用反射调用PlayerPointsAPI.addPoints方法
-            Class<?> apiClass = Class.forName("com.hcrzb.hcrzbshop.api.PlayerPointsAPI");
-            try {
-                // 尝试调用带reason参数的方法
-                Method addPointsMethod = apiClass.getMethod("addPoints", Player.class, int.class, String.class);
-                boolean success = (Boolean) addPointsMethod.invoke(null, player, points, reason);
-                if (success) {
-                    ModLogger.info("为玩家 " + player.getName().getString() + " 添加了 " + points + " 点数，原因：" + reason);
-                } else {
-                    ModLogger.warn("为玩家 " + player.getName().getString() + " 添加点数失败，原因：" + reason);
-                }
-            } catch (NoSuchMethodException e) {
-                // 如果没有带reason参数的方法，使用不带reason的方法
-                Method addPointsMethod = apiClass.getMethod("addPoints", Player.class, int.class);
-                boolean success = (Boolean) addPointsMethod.invoke(null, player, points);
-                if (success) {
-                    ModLogger.info("为玩家 " + player.getName().getString() + " 添加了 " + points + " 点数");
-                } else {
-                    ModLogger.warn("为玩家 " + player.getName().getString() + " 添加点数失败");
-                }
-            }
-        } catch (ClassNotFoundException e) {
-            ModLogger.warn("未找到HCRZBShop API类，确认已安装HCR ZB Shop模组");
-        } catch (Exception e) {
-            ModLogger.warn("无法调用PlayerPointsAPI.addPoints: " + e.getMessage());
+        if (OptionalPointsIntegration.add(player, points, reason)) {
+            ModLogger.info("为玩家 " + player.getName().getString() + " 添加了 "
+                + points + " 点数，原因：" + reason);
         }
     }
     

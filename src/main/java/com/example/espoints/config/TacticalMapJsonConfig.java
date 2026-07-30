@@ -1,21 +1,15 @@
 package com.example.espoints.config;
 
-import com.example.espoints.ESPointsMod;
 import com.example.espoints.util.ModLogger;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParseException;
-import net.minecraft.resources.ResourceLocation;
 
 /**
- * Datapack-backed runtime settings for the tactical map viewport.
+ * Runtime settings frozen from the active Espetro map.
  */
 public final class TacticalMapJsonConfig {
-    public static final String DATA_DIRECTORY = "tactical_map";
-    public static final ResourceLocation CONFIG_ID =
-        ResourceLocation.fromNamespaceAndPath(ESPointsMod.MOD_ID, "default");
-
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private static TacticalMapJsonConfig instance;
@@ -31,8 +25,12 @@ public final class TacticalMapJsonConfig {
     public int backgroundImageHeight = 0;
     public boolean showGrid = true;
     public boolean showLabels = true;
-    public int tacticalMarkerDurationSeconds = 120;
-    public int tacticalMarkerFadeSeconds = 120;
+    /** 非 persistent 标点存活秒数（3D/地图共用）。 */
+    public int tacticalMarkerDurationSeconds = 10;
+    /** 末尾淡出秒数（opacity = remaining/fade）。 */
+    public int tacticalMarkerFadeSeconds = 3;
+    /** 3D 世界最大渲染距离（方块）；超出不绘制。 */
+    public int tacticalMarkerMaxRenderDistance = 128;
 
     private transient String source = "internal defaults";
 
@@ -79,25 +77,16 @@ public final class TacticalMapJsonConfig {
         return copy;
     }
 
-    /**
-     * Tactical map JSON is now loaded by the server datapack reload listener.
-     */
     public void reloadIfChanged() {
-        // Kept for older call sites; datapack reload is event-driven.
+        // Per-map settings are immutable for the lifetime of a match.
     }
 
-    /**
-     * Tactical map JSON is now loaded from data/espoints/tactical_map/default.json.
-     */
     public void loadConfig() {
-        ModLogger.warn("战术地图JSON配置现在由数据包加载，请使用 /reload 热加载数据包配置");
+        ModLogger.warn("战术地图由当前 Espetro 地图提供，只能在下一局切换");
     }
 
-    /**
-     * Tactical map JSON defaults live in the mod resources and can be overridden by datapacks.
-     */
     public void saveConfig() {
-        ModLogger.warn("战术地图JSON配置现在由数据包提供，不再写入全局 config 文件");
+        ModLogger.warn("活动地图配置为只读，未修改 EsWorld 模板");
     }
 
     public String getSource() {
@@ -137,6 +126,10 @@ public final class TacticalMapJsonConfig {
             Math.max(1, tacticalMarkerFadeSeconds) * 1000L);
     }
 
+    public double getTacticalMarkerMaxRenderDistance() {
+        return Math.max(16, tacticalMarkerMaxRenderDistance);
+    }
+
     private double clampRange(double range, TacticalMapBounds bounds) {
         return Math.max(1.0D, Math.min(bounds.size(), range));
     }
@@ -158,6 +151,7 @@ public final class TacticalMapJsonConfig {
         this.showLabels = loadedConfig.showLabels;
         this.tacticalMarkerDurationSeconds = Math.max(1, loadedConfig.tacticalMarkerDurationSeconds);
         this.tacticalMarkerFadeSeconds = Math.max(1, loadedConfig.tacticalMarkerFadeSeconds);
+        this.tacticalMarkerMaxRenderDistance = Math.max(16, loadedConfig.tacticalMarkerMaxRenderDistance);
     }
 
     public static final class TacticalMapBounds {

@@ -1,62 +1,73 @@
 # HCR AAD 配置文档
 
-## 配置文件总览
+## 配置来源
 
-| 文件 | 端 | 来源 | 重载 |
-| --- | --- | --- | --- |
-| `config/espoints-common.toml` | 服务端/通用 | Forge COMMON | 重启或配置界面同步 |
-| `config/espoints-client.toml` | 客户端 | Forge CLIENT | 客户端重启/配置界面 |
-| `config/hcr_map_player_display.json` | 服务端 | 自动创建 | `/hcrpi reload` |
-| `config/espoints/teamfight.json` | 服务端 | 自动创建 | `/hcrpi teamfight loadconfig` 或 `/hcrpi reload` |
-| `config/espoints/presets/preset_<id>.json` | 服务端 | 命令生成 | `/hcrpi teamfight load <id>` |
-| `data/espoints/tactical_map/default.json` | 服务端数据包 | 内置，可被数据包覆盖 | `/reload` |
+HCR AAD 现在把“客户端显示设置”和“地图规则”分开：
 
-只编辑 `src/main/resources` 或服务器配置/数据包文件，不要编辑 `build/resources` 下的构建副本。
+| 文件 | 作用 | 所有者 |
+| --- | --- | --- |
+| `config/espoints-common.toml` | HUD、检测频率、奖励等通用设置 | HCR AAD |
+| `config/espoints-client.toml` | 战术地图位置、缩放和颜色 | 每个客户端 |
+| `config/hcr_map_player_display.json` | 是否显示玩家位置 | HCR AAD |
+| `EsWorld/<地图>/EsConfig/TacticalMap.json` | 当前地图边界、底图和标点显示 | Espetro 地图 |
+| `EsWorld/<地图>/EsConfig/CapturePoints.json` | 当前地图据点批次和双方兵力 | Espetro 地图 |
+| `config/espoints/exports/*.json` | 管理员手工导出的运行状态 | HCR AAD，只写这里 |
+| `config/espoints/presets/*.json` | 旧版管理员预设兼容 | HCR AAD |
 
-## 构建与模组元数据配置
+不再读取 `config/espoints/teamfight.json`、`data/espoints/tactical_map/default.json` 或旧的
+`config/hcr_tactical_map.json`。`/reload` 不会更换活动地图规则。
+
+地图规则由 Espetro 在服务端启动时校验并冻结。地图激活时，HCR AAD 接收内存快照；停止游戏、
+结算或切换地图时会清空据点、底图、标点和同步缓存。HCR AAD 不会修改
+`EsWorld/<地图>` 中的任何文件。
+
+## 构建与依赖
 
 | `gradle.properties` 字段 | 当前值 | 说明 |
 | --- | --- | --- |
 | `minecraft_version` | `1.20.1` | 目标游戏版本 |
-| `forge_version` | `47.4.0` | Forge 开发版本 |
-| `mod_id` | `espoints` | 资源命名空间和模组 ID |
-| `mod_version` | `1.0.6-final` | 构建版本 |
-| `espetro_version` | `1.0.6-final` | Espetro 最低版本 |
+| `forge_version` | `47.4.20` | Forge 开发版本 |
+| `mod_id` | `espoints` | 模组 ID |
+| `mod_version` | `1.1.0-final` | HCR AAD 构建版本 |
+| `espetro_version` | `1.1.0-alpha` | Espetro 编译和运行最低版本 |
+| `pingwheel_version` | `1.12.1` | 客户端和服务器强制安装的 Ping Wheel 兼容版本 |
+| `auratip_version` | `1.1.1-beta` | 战术轮盘强制依赖 |
+| `oelib_version` | `0.2.4` | AuraTip 运行时强制依赖 |
 | `mod_group_id` | `com.example.espoints` | Maven group |
 
-`META-INF/mods.toml` 声明 Forge 47、Minecraft 1.20.1、MUtil 6.3.0 和 Espetro 最低版本。变更版本时应同步更新 Gradle 属性、依赖声明和元数据范围。
-
-其他 JSON 资源：
-
-- `assets/espoints/lang/zh_cn.json`、`en_us.json` 是翻译键值表；两种语言应保持相同键集合。
-- `pack.mcmeta` 是模组内置资源包元数据，Minecraft 1.20.1 使用 `pack_format: 15`。
-- `assets/espoints/md_templates` 是运行时生成教程的 Markdown 模板，不是服务器规则配置。
+客户端和服务器都需要 Espetro、HCR AAD、MUtil、Ping Wheel 1.12.1、AuraTip 与 OELib。
+这些运行要求均在 `mods.toml` 声明。普通 GUI 使用 MUtil，战术类型轮盘使用 AuraTip，
+世界射线与 3D 标点显示复用 Ping Wheel。
 
 ## `espoints-common.toml`
 
 ### HUD Settings
 
-| 字段 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `enableHUD` | Boolean | `true` | 总体 HUD 开关 |
-| `enableCarousel` | Boolean | `true` | 据点信息轮播开关 |
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enableHUD` | `true` | 总体 HUD 开关 |
+| `enableCarousel` | `true` | 据点信息轮播开关 |
 
 ### Team Settings
 
-| 字段 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `enableTeams` | Boolean | `true` | 兼容旧配置；当前逻辑固定使用 Espetro 阵营 |
-| `enableTeamIndicator` | Boolean | `true` | 玩家头顶友军/敌军标识 |
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enableTeams` | `true` | 旧配置兼容；实际阵营固定来自 Espetro |
+| `enableTeamIndicator` | `true` | 玩家头顶友军/敌军标识 |
 
 ### Performance Settings
 
-| 字段 | 类型 | 默认 | 范围 | 说明 |
-| --- | --- | ---: | ---: | --- |
-| `checkInterval` | Integer | 5 | 1..100 tick | 据点检测间隔；越小响应越快、CPU 开销越高 |
+| 字段 | 默认 | 范围 | 说明 |
+| --- | ---: | ---: | --- |
+| `checkInterval` | 5 | 1..100 tick | 据点检测间隔；越小响应越快、CPU 开销越高 |
+| `tacticalMapServerMemoryMiB` | 32 | 8..512 MiB | 服务端编码瓦片 LRU |
+| `tacticalMapDiskCacheMiB` | 512 | 64..4096 MiB | `config/espoints/cache/tactical-map/` 磁盘预算 |
+| `tacticalMapPlayerTransferKiBps` | 256 | 32..4096 KiB/s | 单玩家瓦片平均传输预算 |
+| `tacticalMapGlobalTransferKiBps` | 4096 | 256..65536 KiB/s | 全服瓦片平均传输预算 |
 
 ### Reward Settings
 
-| 字段 | 默认 | 范围 | 单位/说明 |
+| 字段 | 默认 | 范围 | 说明 |
 | --- | ---: | ---: | --- |
 | `pointRewardInterval` | 60 | 1..3600 | 据点内周期奖励间隔，秒 |
 | `pointRewardAmount` | 5 | 1..1000 | 每次据点内奖励 |
@@ -70,10 +81,10 @@
 
 ### Operation Settings
 
-| 字段 | 类型 | 默认 | 范围 | 说明 |
-| --- | --- | --- | --- | --- |
-| `enableOperationMode` | Boolean | `true` | 兼容旧配置；当前行动模式固定启用 |
-| `lowReinforcementThreshold` | Double | `10.0` | 0..100 | 低兵力 BGM 阈值百分比；0 为禁用 |
+| 字段 | 默认 | 范围 | 说明 |
+| --- | --- | --- | --- |
+| `enableOperationMode` | `true` | Boolean | 旧配置兼容；Espetro 对局固定使用行动模式 |
+| `lowReinforcementThreshold` | `10.0` | 0..100 | 低兵力 BGM 阈值百分比；0 为禁用 |
 
 ## `espoints-client.toml`
 
@@ -83,14 +94,20 @@ displayMode = "TOGGLE_KEY"
 miniMapScale = 75
 attackerProgressBarColor = "#FF5500"
 defenderProgressBarColor = "#0055FF"
+tileTextureCacheMiB = 64
+mapImageQuality = "BALANCED"
 ```
 
 | 字段 | 默认 | 可选值/格式 |
 | --- | --- | --- |
-| `displayMode` | `TOGGLE_KEY` | `TOGGLE_KEY`, `ALWAYS_VISIBLE_BOTTOM_LEFT`, `ALWAYS_VISIBLE_TOP_LEFT`, `ALWAYS_VISIBLE_BOTTOM_RIGHT`, `ALWAYS_VISIBLE_TOP_RIGHT` |
+| `displayMode` | `TOGGLE_KEY` | `TOGGLE_KEY` 或四角常显模式 |
 | `miniMapScale` | `75` | 25..100，百分比 |
 | `attackerProgressBarColor` | `#FF5500` | `#RRGGBB` |
 | `defenderProgressBarColor` | `#0055FF` | `#RRGGBB` |
+| `tileTextureCacheMiB` | `64` | 16..512 MiB；高级瓦片纹理 LRU，低级预览跨开关保留 |
+| `mapImageQuality` | `BALANCED` | `PERFORMANCE`、`BALANCED` 或 `HIGH`；平衡/高清在视野稳定 250 ms 后分别渐进细化一/两层 |
+
+所有 HCR AAD 配置页和游戏内窗口都以 MUtil 构建。界面更新采用稳定布局刷新，不再依赖逐帧淡入层。
 
 ## `hcr_map_player_display.json`
 
@@ -100,11 +117,64 @@ defenderProgressBarColor = "#0055FF"
 }
 ```
 
-`showPlayerLocations` 控制战术地图是否同步并显示玩家位置。也可用 `/hcrpi mapctrl true|false` 修改；修改会立即保存。
+`showPlayerLocations` 控制服务端是否向战场玩家同步位置。管理员也可用
+`/hcrpi mapctrl true|false` 即时修改。
 
-## `teamfight.json`
+## 地图目录
 
-推荐格式：
+```text
+<服务器根目录>/
+└── EsWorld/
+    └── my_map/
+        ├── level.dat
+        ├── region/
+        └── EsConfig/
+            ├── TacticalMap.json
+            ├── CapturePoints.json
+            └── map.png              # 可选
+```
+
+两份 JSON 都是地图必需文件。任何一份缺失或校验失败时，Espetro 会拒绝整张地图，而不是回退到旧
+HCR AAD 配置。
+
+## `TacticalMap.json`
+
+```json
+{
+  "topLeftX": -512,
+  "topLeftZ": -512,
+  "bottomRightX": 512,
+  "bottomRightZ": 512,
+  "initialRange": 512,
+  "minimumRange": 64,
+  "backgroundImage": "map.png",
+  "backgroundImageWidth": 1024,
+  "backgroundImageHeight": 1024,
+  "showGrid": true,
+  "showLabels": true,
+  "tacticalMarkerDurationSeconds": 120,
+  "tacticalMarkerFadeSeconds": 120
+}
+```
+
+| 字段 | 规则 |
+| --- | --- |
+| `topLeftX/topLeftZ` | 地图西北角世界坐标 |
+| `bottomRightX/bottomRightZ` | 地图东南角，必须分别大于左上角 |
+| `initialRange` | 初始可见范围，必须大于 0 |
+| `minimumRange` | 最小可见范围，必须大于 0 且不超过初始范围 |
+| `backgroundImage` | 可留空；非空时为同一 `EsConfig/` 内的相对 PNG 路径 |
+| `backgroundImageWidth/Height` | 图片尺寸提示；不用底图时可为 0 |
+| `showGrid/showLabels` | 网格和名称开关 |
+| `tacticalMarkerDurationSeconds` | 标点完整显示时间 |
+| `tacticalMarkerFadeSeconds` | 标点淡出时间 |
+
+底图由 Espetro 读取后以只读字节快照分片同步，最大 16 MiB。禁止绝对路径、`..`、盘符、符号链接、
+非 PNG 扩展名和伪造 PNG。客户端不再从本地任意文件路径寻找底图。
+
+战术标点与指挥官技能目标在服务端再次校验：玩家必须位于当前活动战场、坐标必须在边界内，并且具有相应权限。
+
+## `CapturePoints.json`
 
 ```json
 {
@@ -118,155 +188,32 @@ defenderProgressBarColor = "#0055FF"
     {
       "name": "A",
       "batch": 1,
-      "pos1": { "x": 100, "y": 60, "z": 100 },
-      "pos2": { "x": 120, "y": 80, "z": 120 }
+      "pos1": {"x": -24, "y": 60, "z": -24},
+      "pos2": {"x": 24, "y": 72, "z": 24}
     },
     {
       "name": "B",
       "batch": 2,
-      "pos1": [200, 60, 200],
-      "pos2": [220, 80, 220]
+      "pos1": {"x": 104, "y": 60, "z": -24},
+      "pos2": {"x": 152, "y": 72, "z": 24}
     }
   ]
 }
 ```
 
-### 根字段
+| 字段 | 规则 |
+| --- | --- |
+| `totalBatches` | 至少 1，且不能小于任一据点的 `batch` |
+| `endBehavior` | `terminate` 或 `loop` |
+| `teamReinforcements.ATTACK/DEFEND` | 双方初始兵力，必须大于 0 |
+| `plannedPoints` | 据点数组 |
+| `name` | 单个 `A-Z` 字母，不能重复 |
+| `batch` | `1..totalBatches`，每批最多 7 个据点 |
+| `pos1/pos2` | `{x,y,z}` 两个不同角点，组成占领长方体 |
 
-| 字段 | 必填 | 默认 | 规则 |
-| --- | --- | --- | --- |
-| `totalBatches` | 否 | 据点最大 `batch`，无据点时为 1 | >= 1，且不能小于最大批次 |
-| `endBehavior` | 否 | `terminate` | `terminate` 或 `loop` |
-| `teamReinforcements` | 否 | 两队各 50 | 对象；值必须 > 0 |
-| `plannedPoints` | 否 | 空数组 | 数组或以据点名为键的对象 |
+部署阶段开始时自动建立第一批据点。所有占领计算、位置同步和胜负消息只绑定到当前活动战场。
 
-兼容别名：`plannedPoints` 也可写成 `points` 或 `capturePoints`；兵力也可使用 `attackReinforcements`、`attackerReinforcements`、`defendReinforcements`、`defenderReinforcements`。
-
-### 据点字段
-
-| 字段 | 必填 | 规则 |
-| --- | --- | --- |
-| `name` | 数组形式必填 | 单个大写字母 `A`..`Z`，不可重复 |
-| `batch` | 是 | >= 1；每批最多 7 个据点 |
-| `pos1` | 是 | `{x,y,z}` 或 `[x,y,z]` |
-| `pos2` | 是 | 与 `pos1` 构成非零长方体 |
-
-对象形式示例：
-
-```json
-{
-  "plannedPoints": {
-    "A": {
-      "batch": 1,
-      "from": [100, 60, 100],
-      "to": [120, 80, 120]
-    }
-  }
-}
-```
-
-`from`/`to` 分别是 `pos1`/`pos2` 的兼容别名。
-
-## 战术地图数据包 JSON
-
-内置位置：`src/main/resources/data/espoints/tactical_map/default.json`。
-
-服务器覆盖目录：
-
-```text
-world/datapacks/my_hcr_config/
-├── pack.mcmeta
-└── data/espoints/tactical_map/default.json
-```
-
-```json
-{
-  "topLeftX": -512,
-  "topLeftZ": -512,
-  "bottomRightX": 512,
-  "bottomRightZ": 512,
-  "initialRange": 512,
-  "minimumRange": 64,
-  "backgroundImage": "",
-  "backgroundImageWidth": 0,
-  "backgroundImageHeight": 0,
-  "showGrid": true,
-  "showLabels": true,
-  "tacticalMarkerDurationSeconds": 120,
-  "tacticalMarkerFadeSeconds": 120
-}
-```
-
-| 字段 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `topLeftX`, `topLeftZ` | Integer | -512 | 地图边界第一角 |
-| `bottomRightX`, `bottomRightZ` | Integer | 512 | 地图边界第二角；代码会自动取 min/max |
-| `initialRange` | Integer | 512 | 首次打开时可见范围，<=0 时使用完整地图尺寸 |
-| `minimumRange` | Integer | 64 | 最小缩放范围，至少 1 |
-| `backgroundImage` | String | 空 | 背景图片资源 ID或客户端文件路径；空表示无背景 |
-| `backgroundImageWidth`, `backgroundImageHeight` | Integer | 0 | 同步的图片尺寸元数据；当前渲染器以实际解码尺寸为准，负数会归零 |
-| `showGrid` | Boolean | `true` | 网格开关 |
-| `showLabels` | Boolean | `true` | 标签开关 |
-| `tacticalMarkerDurationSeconds` | Integer | 120 | 标点总寿命，至少 1 秒 |
-| `tacticalMarkerFadeSeconds` | Integer | 120 | 淡出时间，至少 1 且不超过总寿命 |
-
-执行 `/reload` 后服务端应用配置并同步所有客户端。旧文件 `config/hcr_tactical_map.json` 已不再读取，应迁移到数据包路径。
-
-Espetro `155火炮支援` 选点同样使用这里的 `topLeftX/topLeftZ/bottomRightX/bottomRightZ` 作为服务端边界。客户端右键选点后，`SelectArtillerySupportTargetMessage` 会先检查坐标是否在 `TacticalMapBounds` 内，越界请求不会交给 Espetro；通过校验后由 Espetro 的 KubeJS 指挥官技能回调执行实际火力效果。ESPoints 只负责坐标提交和 `ARTILLERY_TARGET` 标点同步。
-
-`backgroundImage` 支持以下写法：
-
-```text
-espoints:textures/gui/map.png
-assets/espoints/textures/gui/map.png
-textures/gui/map.png
-config/espoints/map.png
-/absolute/client/path/map.png
-```
-
-前三种从客户端资源管理器读取；后两种从每个客户端的游戏目录或绝对路径读取。因此服务器配置文件路径时，所有客户端都必须在相同相对位置放置图片。发布整合包时优先使用资源 ID。
-
-## 行动预设 JSON
-
-`/hcrpi teamfight save <id>` 生成 `config/espoints/presets/preset_<id>.json`：
-
-```json
-{
-  "plannedPoints": {
-    "A": {
-      "name": "A",
-      "pos1": { "x": 0, "y": 60, "z": 0 },
-      "pos2": { "x": 10, "y": 70, "z": 10 },
-      "batch": 1
-    }
-  },
-  "teamRoles": {
-    "ATTACK": "attacker",
-    "DEFEND": "defender"
-  },
-  "teamReinforcements": {
-    "ATTACK": 280,
-    "DEFEND": 1200
-  }
-}
-```
-
-预设格式是旧式完整状态快照，缺少严格校验。新部署优先使用 `teamfight.json`；预设用于管理员快速保存/恢复运行中的计划。
-
-## 数据包 `pack.mcmeta`
-
-```json
-{
-  "pack": {
-    "pack_format": 15,
-    "description": "HCR server configuration"
-  }
-}
-```
-
-## 配置命令
-
-所有管理命令要求权限等级 2：
+## 管理员导出与兼容命令
 
 ```text
 /hcrpi reload
@@ -280,10 +227,16 @@ config/espoints/map.png
 /hcrpi teamfight load <id>
 ```
 
-## 校验与排错
+- `loadconfig` 只重新应用当前活动地图启动时冻结的 `CapturePoints.json`，不会重新读磁盘。
+- `saveconfig` 导出到 `config/espoints/exports/<地图>-CapturePoints.json`，不会覆盖地图模板。
+- `reload` 只重载 HCR AAD 自己的 TOML/玩家显示设置并重新应用当前冻结快照。
+- 预设命令保留给管理员兼容旧工作流，不会改变 Espetro 的地图源。
 
-- JSON 必须是 UTF-8 且不能包含尾随逗号或注释。
-- 修改数据包地图后使用原版 `/reload`；修改 `teamfight.json` 后使用 `/hcrpi teamfight loadconfig`。
-- 行动正在运行时，普通 `loadconfig` 会拒绝覆盖状态。
-- 玩家没有显示在地图上时检查 `hcr_map_player_display.json` 和 Espetro 队伍状态。
-- 背景图不显示时同时检查资源 ID、图片是否随资源包分发，以及宽高字段。
+## 排错
+
+- 地图不出现：查看 Espetro 启动日志中的地图拒绝原因。
+- 地图显示“不可用”：确认客户端和服务器同时安装当前 HCR AAD，并确认活动地图已成功激活。
+- 底图不显示：检查相对文件名、PNG 内容、16 MiB 上限以及 `TacticalMap.json` 边界。
+- 据点不出现：确认已经进入部署阶段，并检查 `plannedPoints`、批次和坐标。
+- 旧地图或标点残留：应通过正常结算或 `/espetro stop` 结束；清理事件会同时清空 HCR AAD 状态。
+- JSON 必须为 UTF-8，不支持注释和尾随逗号。修改地图文件后必须完整重启服务器。

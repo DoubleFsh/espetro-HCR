@@ -42,8 +42,9 @@ public class ShowMessagePopupMessage {
      * 编码消息
      */
     public static void encode(ShowMessagePopupMessage msg, FriendlyByteBuf buf) {
+        validate(msg.message, msg.duration, msg.width, msg.height, msg.borderWidth);
         buf.writeUUID(msg.playerUUID);
-        buf.writeUtf(msg.message);
+        buf.writeUtf(msg.message, 1024);
         buf.writeLong(msg.duration);
         buf.writeInt(msg.width);
         buf.writeInt(msg.height);
@@ -57,9 +58,9 @@ public class ShowMessagePopupMessage {
      * 解码消息
      */
     public static ShowMessagePopupMessage decode(FriendlyByteBuf buf) {
-        return new ShowMessagePopupMessage(
+        ShowMessagePopupMessage message = new ShowMessagePopupMessage(
             buf.readUUID(),
-            buf.readUtf(),
+            buf.readUtf(1024),
             buf.readLong(),
             buf.readInt(),
             buf.readInt(),
@@ -68,6 +69,20 @@ public class ShowMessagePopupMessage {
             buf.readInt(),
             buf.readInt()
         );
+        validate(message.message, message.duration, message.width,
+            message.height, message.borderWidth);
+        return message;
+    }
+
+    private static void validate(
+            String message, long duration, int width, int height, int borderWidth) {
+        if (message == null || message.length() > 1024
+            || duration < 0L || duration > 600_000L
+            || width < 0 || width > 4_096
+            || height < 0 || height > 4_096
+            || borderWidth < 0 || borderWidth > 64) {
+            throw new IllegalArgumentException("Invalid popup payload");
+        }
     }
 
     /**

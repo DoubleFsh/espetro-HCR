@@ -70,7 +70,7 @@ public class CapturePoint {
         this.progress = 0;
         this.capturedStateStartTime = 0;
         
-        ModLogger.info("创建据点: " + name + " (批次 " + batch + ") 从 (" + pos1.getX() + "," + pos1.getY() + "," + pos1.getZ() + ") 到 (" + pos2.getX() + "," + pos2.getY() + "," + pos2.getZ() + ")");
+        ModLogger.debug("创建据点: " + name + " (批次 " + batch + ") 从 (" + pos1.getX() + "," + pos1.getY() + "," + pos1.getZ() + ") 到 (" + pos2.getX() + "," + pos2.getY() + "," + pos2.getZ() + ")");
         
     }
     
@@ -95,7 +95,7 @@ public class CapturePoint {
      */
     public void updateStatus(List<? extends Player> playersInPoint) {
         try {
-            ModLogger.info("更新据点 " + name + " 状态，当前状态: " + state + ", 玩家数量: " + playersInPoint.size());
+            ModLogger.debug("更新据点 " + name + " 状态，当前状态: " + state + ", 玩家数量: " + playersInPoint.size());
             
             switch (state) {
                 case NEUTRAL:
@@ -121,7 +121,7 @@ public class CapturePoint {
             // 更新显示状态
             updateDisplayState(playersInPoint);
             
-            ModLogger.info("据点 " + name + " 更新后状态: " + state + ", 显示状态: " + getDisplayState() + ", 进度: " + progress + ", 占领者: " + captorName);
+            ModLogger.debug("据点 " + name + " 更新后状态: " + state + ", 显示状态: " + getDisplayState() + ", 进度: " + progress + ", 占领者: " + captorName);
         } catch (Exception e) {
             ModLogger.error("更新据点状态时发生异常: " + e.getMessage());
         }
@@ -162,7 +162,7 @@ public class CapturePoint {
             // 玩家全部离开，回到已占领状态
             state = CaptureState.CAPTURED;
             capturedStateStartTime = 0; // 重置已占领状态开始时间
-            ModLogger.info("据点 " + name + " 玩家离开，回到已占领状态");
+            ModLogger.debug("据点 " + name + " 玩家离开，回到已占领状态");
             return;
         }
 
@@ -195,7 +195,7 @@ public class CapturePoint {
                 // 进度还很高，回到已占领状态
                 state = CaptureState.CAPTURED;
                 capturedStateStartTime = 0; // 重置已占领状态开始时间
-                ModLogger.info("据点 " + name + " 玩家离开，进度仍高，回到已占领状态");
+                ModLogger.debug("据点 " + name + " 玩家离开，进度仍高，回到已占领状态");
             }
             return;
         }
@@ -215,7 +215,7 @@ public class CapturePoint {
         Map<String, Integer> teamGroups = getTeamGroups(playersInPoint);
         if (teamGroups.isEmpty()) {
             // 无玩家在场，保持已占领状态
-            ModLogger.info("据点 " + name + " 无玩家在场，保持已占领状态");
+            ModLogger.debug("据点 " + name + " 无玩家在场，保持已占领状态");
         } else {
             pushCapturedProgressByMajority(teamGroups);
         }
@@ -226,7 +226,7 @@ public class CapturePoint {
             long duration = currentTime - capturedStateStartTime;
             if (duration >= 5000) { // 5秒
                 progress = 100;
-                ModLogger.info("据点 " + name + " 已占领状态持续5秒，进度自动恢复到100%");
+                ModLogger.debug("据点 " + name + " 已占领状态持续5秒，进度自动恢复到100%");
             }
         }
     }
@@ -235,7 +235,7 @@ public class CapturePoint {
         String majorityTeam = getMajorityTeam(teamGroups);
         if (majorityTeam == null) {
             state = CaptureState.CAPTURING_CONTESTED;
-            ModLogger.info("据点 " + name + " 双方人数相同，升旗进度暂停，队伍数量: " + teamGroups.size());
+            ModLogger.debug("据点 " + name + " 双方人数相同，升旗进度暂停，队伍数量: " + teamGroups.size());
             return;
         }
 
@@ -249,7 +249,7 @@ public class CapturePoint {
                 captureForTeam(majorityTeam);
             } else {
                 state = CaptureState.CAPTURING_FLAG;
-                ModLogger.info("据点 " + name + " 多数方 " + majorityTeam + " 推进升旗，进度: " + progress + "，人数: " + teamGroups.get(majorityTeam));
+                ModLogger.debug("据点 " + name + " 多数方 " + majorityTeam + " 推进升旗，进度: " + progress + "，人数: " + teamGroups.get(majorityTeam));
             }
             return;
         }
@@ -258,10 +258,10 @@ public class CapturePoint {
         if (progress <= 0) {
             captorName = majorityTeam;
             state = CaptureState.CAPTURING_FLAG;
-            ModLogger.info("据点 " + name + " 原升旗进度被压制清空，多数方切换为 " + majorityTeam);
+            ModLogger.debug("据点 " + name + " 原升旗进度被压制清空，多数方切换为 " + majorityTeam);
         } else {
             state = CaptureState.CAPTURING_CONTESTED;
-            ModLogger.info("据点 " + name + " 多数方 " + majorityTeam + " 正在压制 " + captorName + " 的升旗进度，进度: " + progress);
+            ModLogger.debug("据点 " + name + " 多数方 " + majorityTeam + " 正在压制 " + captorName + " 的升旗进度，进度: " + progress);
         }
     }
 
@@ -275,7 +275,7 @@ public class CapturePoint {
         if (majorityTeam == null) {
             state = CaptureState.CONTESTED;
             capturedStateStartTime = 0;
-            ModLogger.info("据点 " + name + " 双方人数相同，降旗/恢复进度暂停，队伍数量: " + teamGroups.size());
+            ModLogger.debug("据点 " + name + " 双方人数相同，降旗/恢复进度暂停，队伍数量: " + teamGroups.size());
             return;
         }
 
@@ -285,7 +285,7 @@ public class CapturePoint {
             if (progress >= 100) {
                 capturedStateStartTime = 0;
             }
-            ModLogger.info("据点 " + name + " 占领方 " + captorName + " 人数占优，恢复进度: " + progress);
+            ModLogger.debug("据点 " + name + " 占领方 " + captorName + " 人数占优，恢复进度: " + progress);
             return;
         }
 
@@ -295,7 +295,7 @@ public class CapturePoint {
             resetToNeutral("据点 " + name + " 被多数方 " + majorityTeam + " 降旗完成，回到中立状态");
         } else {
             state = CaptureState.CAPTURING_DOWN;
-            ModLogger.info("据点 " + name + " 多数方 " + majorityTeam + " 正在降旗，进度: " + progress + "，占领方: " + captorName);
+            ModLogger.debug("据点 " + name + " 多数方 " + majorityTeam + " 正在降旗，进度: " + progress + "，占领方: " + captorName);
         }
     }
 
@@ -331,7 +331,7 @@ public class CapturePoint {
         progress = 0;
         captorName = "";
         capturedStateStartTime = 0;
-        ModLogger.info(reason);
+        ModLogger.debug(reason);
     }
     
     /**
@@ -454,7 +454,7 @@ public class CapturePoint {
          */
         public static SerializableCapturePoint fromNetwork(FriendlyByteBuf buf) {
             try {
-                String name = buf.readUtf();
+                String name = buf.readUtf(32);
                 BlockPos pos1 = buf.readBlockPos();
                 BlockPos pos2 = buf.readBlockPos();
                 int batch = buf.readVarInt();
@@ -467,8 +467,9 @@ public class CapturePoint {
                 }
                 CaptureState state = states[stateId];
                 DisplayState displayState = displayStates[displayStateId];
-                String captorName = buf.readUtf();
+                String captorName = buf.readUtf(32);
                 int progress = buf.readVarInt();
+                validateNetworkFields(name, pos1, pos2, batch, captorName, progress);
                 
                 return new SerializableCapturePoint(name, pos1, pos2, batch, state, displayState, captorName, progress);
             } catch (Exception e) {
@@ -482,17 +483,29 @@ public class CapturePoint {
          * @param buf 网络数据包缓冲区
          */
         public void toNetwork(FriendlyByteBuf buf) {
-            try {
-                buf.writeUtf(name);
-                buf.writeBlockPos(pos1);
-                buf.writeBlockPos(pos2);
-                buf.writeVarInt(batch);
-                buf.writeByte(state.ordinal());
-                buf.writeByte(displayState.ordinal());
-                buf.writeUtf(captorName);
-                buf.writeVarInt(progress);
-            } catch (Exception e) {
-                ModLogger.error("将据点信息写入网络数据包时发生异常: " + e.getMessage());
+            validateNetworkFields(name, pos1, pos2, batch, captorName, progress);
+            if (state == null || displayState == null) {
+                throw new IllegalArgumentException("据点状态不能为空");
+            }
+            buf.writeUtf(name, 32);
+            buf.writeBlockPos(pos1);
+            buf.writeBlockPos(pos2);
+            buf.writeVarInt(batch);
+            buf.writeByte(state.ordinal());
+            buf.writeByte(displayState.ordinal());
+            buf.writeUtf(captorName, 32);
+            buf.writeVarInt(progress);
+        }
+
+        private static void validateNetworkFields(
+                String name, BlockPos pos1, BlockPos pos2, int batch,
+                String captorName, int progress) {
+            if (name == null || name.isBlank() || name.length() > 32
+                || captorName == null || captorName.length() > 32
+                || pos1 == null || pos2 == null
+                || batch < 1 || batch > 64
+                || progress < 0 || progress > 100) {
+                throw new IllegalArgumentException("据点网络字段超出协议限制");
             }
         }
     }

@@ -29,6 +29,10 @@ public class SyncCapturePointOverviewMessage {
     }
 
     public static void encode(SyncCapturePointOverviewMessage msg, FriendlyByteBuf buf) {
+        PacketValidation.checkedCount(
+            msg.capturePoints.size(),
+            SyncCapturePointsMessage.MAX_CAPTURE_POINTS,
+            "overview capture point");
         buf.writeBoolean(msg.openScreen);
         buf.writeVarInt(msg.capturePoints.size());
         for (CapturePoint.SerializableCapturePoint point : msg.capturePoints) {
@@ -39,7 +43,7 @@ public class SyncCapturePointOverviewMessage {
     public static SyncCapturePointOverviewMessage decode(FriendlyByteBuf buf) {
         boolean openScreen = buf.readBoolean();
         int size = buf.readVarInt();
-        if (size < 0 || size > 4096) {
+        if (size < 0 || size > SyncCapturePointsMessage.MAX_CAPTURE_POINTS) {
             throw new IllegalArgumentException("Invalid overview capture point count: " + size);
         }
         List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>(size);

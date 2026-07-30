@@ -1,68 +1,68 @@
 package com.example.espoints.network;
 
+import com.example.espoints.client.ClientPlayerIdentityState;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.PacketDistributor;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Supplier;
 
-/**
- * 同步玩家位置的网络消息
- */
-public class SyncPlayerPositionsMessage {
-    private final Map<UUID, PlayerPosition> playerPositions;
+/** Compact 0.5-second position frame keyed by session-local unsigned shorts. */
+public final class SyncPlayerPositionsMessage {
+    public static final int MAX_PLAYERS = 256;
+    private static final double FIXED_POINT_SCALE = 8.0D;
 
-    public SyncPlayerPositionsMessage(Map<UUID, PlayerPosition> playerPositions) {
-        this(playerPositions, true);
+    private final long session;
+    private final Map<Integer, PlayerPosition> positions;
+
+    public SyncPlayerPositionsMessage(long session, Map<Integer, PlayerPosition> positions) {
+        if (session <= 0L || positions == null || positions.size() > MAX_PLAYERS) {
+            throw new IllegalArgumentException("Invalid tactical position frame");
+        }
+        this.session = session;
+        this.positions = Map.copyOf(positions);
     }
 
-    private SyncPlayerPositionsMessage(Map<UUID, PlayerPosition> playerPositions, boolean copy) {
-        this.playerPositions = copy ? Map.copyOf(playerPositions) : playerPositions;
+    public long session() {
+        return session;
     }
 
-    /**
-     * 玩家位置类
-     */
-    public static class PlayerPosition {
+    public Map<Integer, PlayerPosition> positions() {
+        return positions;
+    }
+
+    public static final class PlayerPosition {
+        public static final int NO_SQUAD = -1;
         private final double x;
         private final double y;
         private final double z;
         private final String name;
         private final String teamName;
         private final float yaw;
-        private final boolean metadataIncluded;
+        private final int squadId;
+        private final boolean squadLeader;
+        private final boolean commander;
 
-        public PlayerPosition(double x, double y, double z, String name) {
-            this(x, y, z, name, "", 0.0F);
-        }
-
-        public PlayerPosition(double x, double y, double z, String name, String teamName) {
-            this(x, y, z, name, teamName, 0.0F);
-        }
-
-        public PlayerPosition(double x, double y, double z, String name, String teamName, float yaw) {
-            this(x, y, z, name, teamName, yaw, true);
-        }
-
-        private PlayerPosition(double x, double y, double z, String name, String teamName, float yaw,
-                               boolean metadataIncluded) {
+        public PlayerPosition(double x, double y, double z, String name, String teamName,
+                              float yaw, int squadId, boolean squadLeader, boolean commander) {
             this.x = x;
             this.y = y;
             this.z = z;
-            this.name = Objects.requireNonNullElse(name, "");
-            this.teamName = Objects.requireNonNullElse(teamName, "");
+            this.name = name == null ? "" : name;
+            this.teamName = teamName == null ? "" : teamName;
             this.yaw = yaw;
-            this.metadataIncluded = metadataIncluded;
+            this.squadId = squadId;
+            this.squadLeader = squadLeader;
+            this.commander = commander;
         }
 
-        /** 创建不重复携带姓名和阵营的高频位置更新。 */
         public static PlayerPosition positionOnly(double x, double y, double z, float yaw) {
-            return new PlayerPosition(x, y, z, "", "", yaw, false);
+            return new PlayerPosition(x, y, z, "", "", yaw, NO_SQUAD, false, false);
         }
 
         public double getX() { return x; }
@@ -71,80 +71,98 @@ public class SyncPlayerPositionsMessage {
         public String getName() { return name; }
         public String getTeamName() { return teamName; }
         public float getYaw() { return yaw; }
-        public boolean hasMetadata() { return metadataIncluded; }
+        public int getSquadId() { return squadId; }
+        public boolean isSquadLeader() { return squadLeader; }
+        public boolean isCommander() { return commander; }
+    }
 
-        public PlayerPosition withMetadataFrom(PlayerPosition previous) {
-            if (metadataIncluded || previous == null) {
-                return this;
+    public static void encode(SyncPlayerPositionsMessage message, FriendlyByteBuf buf) {
+        buf.writeVarLong(message.session);
+        buf.writeVarInt(message.positions.size());
+        for (Map.Entry<Integer, PlayerPosition> entry : message.positions.entrySet()) {
+            int shortId = entry.getKey();
+            if (shortId <= 0 || shortId > 0xffff) {
+                throw new IllegalArgumentException("Invalid tactical player id: " + shortId);
             }
-            return new PlayerPosition(x, y, z, previous.name, previous.teamName, yaw, true);
+            PlayerPosition position = entry.getValue();
+            buf.writeShort(shortId);
+            buf.writeInt(toFixed(position.x));
+            buf.writeInt(toFixed(position.z));
+            buf.writeByte(toPackedYaw(position.yaw));
         }
     }
 
-    /**
-     * 编码消息
-     */
-    public static void encode(SyncPlayerPositionsMessage msg, FriendlyByteBuf buf) {
-        buf.writeVarInt(msg.playerPositions.size());
-        for (Map.Entry<UUID, PlayerPosition> entry : msg.playerPositions.entrySet()) {
-            UUID uuid = entry.getKey();
-            PlayerPosition pos = entry.getValue();
-            buf.writeUUID(uuid);
-            buf.writeDouble(pos.getX());
-            buf.writeDouble(pos.getZ());
-            buf.writeFloat(pos.getYaw());
-            buf.writeBoolean(pos.hasMetadata());
-            if (pos.hasMetadata()) {
-                buf.writeUtf(pos.getName());
-                buf.writeUtf(pos.getTeamName());
-            }
-        }
-    }
-
-    /**
-     * 解码消息
-     */
     public static SyncPlayerPositionsMessage decode(FriendlyByteBuf buf) {
-        int size = buf.readVarInt();
-        if (size < 0 || size > 4096) {
-            throw new IllegalArgumentException("Invalid player position count: " + size);
+        long session = buf.readVarLong();
+        if (session <= 0L) {
+            throw new IllegalArgumentException("Invalid tactical position session");
         }
-        Map<UUID, PlayerPosition> positions = new HashMap<>(size);
-        for (int i = 0; i < size; i++) {
-            UUID uuid = buf.readUUID();
-            double x = buf.readDouble();
-            double z = buf.readDouble();
-            float yaw = buf.readFloat();
-            boolean metadataIncluded = buf.readBoolean();
-            String name = metadataIncluded ? buf.readUtf() : "";
-            String teamName = metadataIncluded ? buf.readUtf() : "";
-            positions.put(uuid, new PlayerPosition(x, 0.0D, z, name, teamName, yaw, metadataIncluded));
+        int size = PacketValidation.checkedCount(
+            buf.readVarInt(), MAX_PLAYERS, "player position");
+        Map<Integer, PlayerPosition> positions = new HashMap<>(size);
+        for (int index = 0; index < size; index++) {
+            int shortId = buf.readUnsignedShort();
+            if (shortId == 0 || positions.containsKey(shortId)) {
+                throw new IllegalArgumentException("Invalid/duplicate tactical player id: " + shortId);
+            }
+            double x = fromFixed(buf.readInt());
+            double z = fromFixed(buf.readInt());
+            float yaw = fromPackedYaw(buf.readUnsignedByte());
+            positions.put(shortId, PlayerPosition.positionOnly(x, 0.0D, z, yaw));
         }
-        return new SyncPlayerPositionsMessage(positions, false);
+        return new SyncPlayerPositionsMessage(session, positions);
     }
 
-    /**
-     * 处理消息
-     */
-    public static void handle(SyncPlayerPositionsMessage msg, Supplier<NetworkEvent.Context> contextSupplier) {
+    public static void handle(SyncPlayerPositionsMessage message,
+                              Supplier<NetworkEvent.Context> contextSupplier) {
         NetworkEvent.Context context = contextSupplier.get();
         context.enqueueWork(() -> {
-            // 只在客户端处理
-            if (context.getDirection().getReceptionSide().isClient()) {
-                // 更新客户端的玩家位置数据
-                com.example.espoints.hud.TacticalMapHUD.getInstance().syncPlayerPositionsFromServer(msg.playerPositions);
+            if (!context.getDirection().getReceptionSide().isClient()) {
+                return;
+            }
+            Map<UUID, PlayerPosition> resolved =
+                ClientPlayerIdentityState.get().resolve(message.session, message.positions);
+            if (resolved != null) {
+                com.example.espoints.hud.TacticalMapHUD.getInstance()
+                    .syncPlayerPositionsFromServer(resolved);
             }
         });
         context.setPacketHandled(true);
     }
 
-    /**
-     * 广播消息给所有玩家
-     */
-    public static void broadcastToAll(Map<UUID, PlayerPosition> playerPositions) {
-        NetworkHandler.INSTANCE.send(
-            PacketDistributor.ALL.noArg(),
-            new SyncPlayerPositionsMessage(playerPositions)
-        );
+    public static void sendToPlayers(
+            java.util.Collection<? extends ServerPlayer> players,
+            long session,
+            Map<Integer, PlayerPosition> positions) {
+        if (players == null || players.isEmpty()) {
+            return;
+        }
+        SyncPlayerPositionsMessage message =
+            new SyncPlayerPositionsMessage(session, positions);
+        for (ServerPlayer player : players) {
+            NetworkHandler.INSTANCE.send(
+                PacketDistributor.PLAYER.with(() -> player), message);
+        }
+    }
+
+    public static int toFixed(double coordinate) {
+        if (!Double.isFinite(coordinate)
+            || coordinate < Integer.MIN_VALUE / FIXED_POINT_SCALE
+            || coordinate > Integer.MAX_VALUE / FIXED_POINT_SCALE) {
+            throw new IllegalArgumentException("Invalid tactical coordinate: " + coordinate);
+        }
+        return (int) Math.round(coordinate * FIXED_POINT_SCALE);
+    }
+
+    public static double fromFixed(int fixed) {
+        return fixed / FIXED_POINT_SCALE;
+    }
+
+    public static int toPackedYaw(float yaw) {
+        return Mth.floor(Mth.wrapDegrees(yaw) * 256.0F / 360.0F) & 0xff;
+    }
+
+    public static float fromPackedYaw(int packed) {
+        return Mth.wrapDegrees((packed & 0xff) * 360.0F / 256.0F);
     }
 }

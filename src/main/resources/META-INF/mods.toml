@@ -27,16 +27,16 @@ description='''${mod_description}'''
     side="BOTH"
 
 [[dependencies.${mod_id}]]
-    modId="mutil"
+    modId="tetrachordlib"
     mandatory=true
-    versionRange="6.3.0"
-    ordering="NONE"
+    versionRange="[${tetrachord_version}]"
+    ordering="AFTER"
     side="BOTH"
 
 [[dependencies.${mod_id}]]
     modId="espetro"
     mandatory=true
-    versionRange="[${espetro_version},)"
+    versionRange="[${espetro_version}]"
     ordering="AFTER"
     side="BOTH"
 
@@ -50,7 +50,14 @@ description='''${mod_description}'''
 [[dependencies.${mod_id}]]
     modId="auratip"
     mandatory=true
-    versionRange="[${auratip_version},)"
+    versionRange="[${auratip_version}]"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="apricityui"
+    mandatory=true
+    versionRange="[${apricityui_version}]"
     ordering="AFTER"
     side="BOTH"
 

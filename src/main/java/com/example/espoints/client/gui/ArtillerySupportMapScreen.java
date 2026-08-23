@@ -5,10 +5,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
-import se.mickelus.mutil.gui.GuiElement;
+import org.espetro.client.aui.GuiElement;
 
 /** MUtil-hosted commander map used to select an artillery target. */
-public class ArtillerySupportMapScreen extends MutilScreen {
+public class ArtillerySupportMapScreen extends EspetroMenuScreen {
     private int mapX;
     private int mapY;
     private int mapW;
@@ -29,21 +29,21 @@ public class ArtillerySupportMapScreen extends MutilScreen {
     }
 
     @Override
-    protected void buildMutilRoot(GuiElement root) {
+    protected void buildMenuRoot(GuiElement root) {
         computeMapBounds();
-        root.addChild(HcrMutilWidgets.panel(mapX, mapY, mapW, mapH,
-            0x00000000, HcrMutilWidgets.BORDER_ACTIVE));
-        root.addChild(HcrMutilWidgets.text(8, 7,
-            "§6§l火炮支援选点", HcrMutilWidgets.GOLD));
-        root.addChild(HcrMutilWidgets.text(8, 20,
-            "§7右键选择目标，滚轮缩放地图", HcrMutilWidgets.MUTED));
-        root.addChild(HcrMutilWidgets.button(width - 50, 6, 42, 18,
+        root.addChild(HcrAuiWidgets.panel(mapX, mapY, mapW, mapH,
+            0x00000000, HcrAuiWidgets.BORDER_ACTIVE));
+        root.addChild(HcrAuiWidgets.text(8, 7,
+            "§6§l火炮支援选点", HcrAuiWidgets.GOLD));
+        root.addChild(HcrAuiWidgets.text(8, 20,
+            "§7右键选择目标，滚轮缩放地图", HcrAuiWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.button(width - 50, 6, 42, 18,
             "返回", this::onClose));
     }
 
     @Override
-    protected void renderBeforeMutil(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        HcrMutilWidgets.drawScreenShade(graphics, this.width, this.height);
+    protected void renderBeforeMenu(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        HcrAuiWidgets.drawScreenShade(graphics, this.width, this.height);
         computeMapBounds();
         TacticalMapHUD.getInstance().renderArtillerySelectionMap(
             graphics, mapX, mapY, mapW, mapH, partialTick);

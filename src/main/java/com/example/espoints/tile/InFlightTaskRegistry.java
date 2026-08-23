@@ -18,6 +18,7 @@ public final class InFlightTaskRegistry<K, V> {
     }
 
     public void clear() {
+        tasks.values().forEach(task -> task.cancel(true));
         tasks.clear();
     }
 

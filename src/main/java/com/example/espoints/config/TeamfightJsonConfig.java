@@ -2,6 +2,7 @@ package com.example.espoints.config;
 
 import com.example.espoints.capturepoint.CapturePoint;
 import com.example.espoints.capturepoint.CapturePointManager;
+import com.example.espoints.objective.ObjectiveLayout;
 import com.example.espoints.util.EspetroTeamBridge;
 import com.example.espoints.util.ModLogger;
 import com.google.gson.Gson;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Frozen per-map action-mode setup supplied by Espetro.
@@ -39,9 +41,16 @@ public final class TeamfightJsonConfig {
     private static final int DEFAULT_REINFORCEMENTS = 50;
     /** 进攻方占完一批次据点时的默认兵力增援。 */
     private static final int DEFAULT_ATTACK_BATCH_COMPLETION_REINFORCEMENT = 200;
+    /** RAAS 每次占领成功时的默认兵力增援。 */
+    private static final int DEFAULT_CAPTURE_REINFORCEMENT = 50;
+    /** RAAS 一方占齐全部争夺点后，对方每秒扣兵默认值。 */
+    private static final int DEFAULT_TICKET_BLEED_PER_SECOND = 1;
     private static final int MAX_POINTS_PER_BATCH = 7;
+    private static final int MAX_RAAS_POINTS = ObjectiveLayout.MAX_RAAS_STAGES;
     private static String frozenMapId;
     private static String frozenJson;
+    private static long frozenSeed;
+    private static String lastSelectedLaneId = "";
 
     private TeamfightJsonConfig() {
     }
@@ -62,11 +71,11 @@ public final class TeamfightJsonConfig {
         }
 
         if (frozenJson == null || frozenJson.isBlank()) {
-            return LoadResult.failure(configPath, "无活动战场：据点配置仅来自 EsWorld/<map>/EsConfig/CapturePoints.json 快照，请先由 Espetro 装载地图");
+            return LoadResult.failure(configPath, "无活动战场：据点配置仅来自 EsWorld/<map>/Points 预设快照，请先由 Espetro 装载地图");
         }
 
         try {
-            TeamfightConfig config = parseJson(frozenJson);
+            TeamfightConfig config = parseJson(frozenJson, frozenSeed);
             applyConfig(manager, config);
             ModLogger.debug("已恢复地图 " + frozenMapId + " 的启动快照，计划据点 "
                 + config.points.size() + " 个");
@@ -78,18 +87,33 @@ public final class TeamfightJsonConfig {
     }
 
     public static synchronized LoadResult loadFrozenSnapshot(String mapId, String json) {
+        return loadFrozenSnapshot(mapId, json, ThreadLocalRandom.current().nextLong());
+    }
+
+    /**
+     * Loads a map CapturePoints snapshot. {@code json} may be the raw
+     * EsConfig file (with {@code raas}) or an already-reduced plannedPoints
+     * document. When a raw RAAS layout is present, {@code seed} selects the
+     * lane and stage points. Only {@code AAS}/{@code RAAS} are accepted.
+     */
+    public static synchronized LoadResult loadFrozenSnapshot(String mapId, String json, long seed) {
         Path source = snapshotPath(mapId);
         try {
-            TeamfightConfig config = parseJson(json);
+            LayoutResolution resolution = resolveLayout(parseRootObject(json), seed);
+            lastSelectedLaneId = resolution.laneId;
+            TeamfightConfig config = parseConfig(resolution.root);
             CapturePointManager manager = CapturePointManager.getInstance();
             if (manager.isOperationModeRunning()) {
                 manager.stopOperationMode();
             }
             frozenMapId = mapId == null || mapId.isBlank() ? "unknown" : mapId;
-            frozenJson = json;
+            frozenSeed = seed;
+            frozenJson = GSON.toJson(resolution.root);
             applyConfig(manager, config);
             ModLogger.info("已载入地图 " + frozenMapId + " 的据点配置，共 "
-                + config.points.size() + " 个计划据点");
+                + config.points.size() + " 个计划据点"
+                + (config.raasFrontline ? "（RAAS 对向推线）" : "")
+                + (lastSelectedLaneId.isEmpty() ? "" : "，路线=" + lastSelectedLaneId));
             return LoadResult.success(source, config.points.size(),
                 config.totalBatches, config.endBehavior);
         } catch (RuntimeException e) {
@@ -97,9 +121,16 @@ public final class TeamfightJsonConfig {
         }
     }
 
+    /** Lane id chosen by the last {@link #loadFrozenSnapshot} RAAS select, or empty. */
+    public static synchronized String getLastSelectedLaneId() {
+        return lastSelectedLaneId == null ? "" : lastSelectedLaneId;
+    }
+
     public static synchronized void clearFrozenSnapshot() {
         frozenMapId = null;
         frozenJson = null;
+        frozenSeed = 0L;
+        lastSelectedLaneId = "";
     }
 
     public static LoadResult saveCurrentConfig() {
@@ -132,6 +163,9 @@ public final class TeamfightJsonConfig {
         manager.setTeamRole(EspetroTeamBridge.DEFEND, "defender", defendReinforcements);
         manager.setTotalBatches(config.totalBatches);
         manager.setEndBehavior(config.endBehavior);
+        manager.setRaasFrontline(config.raasFrontline);
+        manager.setCaptureReinforcement(config.captureReinforcement);
+        manager.setTicketBleedPerSecond(config.ticketBleedPerSecond);
         manager.setAttackBatchCompletionReinforcement(config.attackBatchCompletionReinforcement);
 
         for (PlannedPointConfig point : config.points) {
@@ -143,23 +177,84 @@ public final class TeamfightJsonConfig {
         manager.syncToAllClients();
     }
 
-    private static TeamfightConfig parseJson(String json) {
+    private static TeamfightConfig parseJson(String json, long seed) {
+        return parseConfig(resolveLayout(parseRootObject(json), seed).root);
+    }
+
+    private static JsonObject parseRootObject(String json) {
         JsonElement rootElement = JsonParser.parseString(json);
         if (rootElement == null || !rootElement.isJsonObject()) {
             throw new JsonParseException("配置根节点必须是JSON对象");
         }
-        return parseConfig(rootElement.getAsJsonObject());
+        return rootElement.getAsJsonObject();
+    }
+
+    private record LayoutResolution(JsonObject root, String laneId) {
+    }
+
+    /**
+     * Raw RAAS layouts are reduced with {@code seed}. Already-reduced
+     * documents with {@code raasFrontline}/{@code raasSymmetric} keep
+     * plannedPoints and stage batches. AAS documents are unchanged.
+     * {@code RANDOM} is rejected.
+     */
+    private static LayoutResolution resolveLayout(JsonObject root, long seed) {
+        boolean hasRawRaas = root.has("raas") && root.get("raas").isJsonObject();
+        boolean raasFrontline = isRaasFrontlineFlag(root);
+        String mode = getOptionalString(root, "objectiveMode", "AAS");
+        if (mode == null || mode.isBlank()) {
+            mode = "AAS";
+        }
+        String normalized = mode.trim();
+        if ("RANDOM".equalsIgnoreCase(normalized)) {
+            throw new JsonParseException("objectiveMode 只能是 AAS 或 RAAS（已移除 RANDOM）");
+        }
+        boolean isRaas = "RAAS".equalsIgnoreCase(normalized);
+
+        if (hasRawRaas && (isRaas || raasFrontline)) {
+            try {
+                ObjectiveLayout.Selection selection = ObjectiveLayout.parse(root).select(seed);
+                JsonObject reduced = JsonParser.parseString(selection.capturePointsJson())
+                    .getAsJsonObject();
+                return new LayoutResolution(reduced,
+                    selection.laneId() == null ? "" : selection.laneId());
+            } catch (IllegalArgumentException e) {
+                throw new JsonParseException(e.getMessage(), e);
+            }
+        }
+
+        if (raasFrontline) {
+            return new LayoutResolution(markRaasFrontlineReduced(root), "");
+        }
+        return new LayoutResolution(root, "");
+    }
+
+    /** Already-reduced RAAS: keep stage batches for frontline progression. */
+    private static JsonObject markRaasFrontlineReduced(JsonObject root) {
+        JsonObject copy = root.deepCopy();
+        copy.addProperty("raasFrontline", true);
+        copy.remove("raasSymmetric");
+        copy.remove("objectiveMode");
+        copy.remove("raas");
+        return copy;
+    }
+
+    private static boolean isRaasFrontlineFlag(JsonObject root) {
+        return getOptionalBoolean(root, "raasFrontline", false)
+            || getOptionalBoolean(root, "raasSymmetric", false);
     }
 
     private static TeamfightConfig parseConfig(JsonObject root) {
+        boolean raasFrontline = isRaasFrontlineFlag(root);
         List<PlannedPointConfig> points = parsePoints(root);
-        validatePoints(points);
+        validatePoints(points, raasFrontline);
 
         int calculatedBatches = points.stream()
                 .mapToInt(point -> point.batch)
                 .max()
                 .orElse(1);
         int totalBatches = getOptionalInt(root, "totalBatches", calculatedBatches);
+        // RAAS 对向推线：totalBatches = 阶段数，不再强制为 1。
         if (totalBatches < 1) {
             throw new JsonParseException("totalBatches 必须大于等于 1");
         }
@@ -173,8 +268,21 @@ public final class TeamfightJsonConfig {
         }
 
         int attackBatchReward = parseAttackBatchCompletionReinforcement(root);
+        int captureReinforcement = parseCaptureReinforcement(root);
+        int ticketBleed = parseTicketBleedPerSecond(root);
         return new TeamfightConfig(totalBatches, endBehavior, parseTeamReinforcements(root), points,
-            attackBatchReward);
+            attackBatchReward, raasFrontline, captureReinforcement, ticketBleed);
+    }
+
+    private static int parseTicketBleedPerSecond(JsonObject root) {
+        JsonElement element = firstPresent(root, "ticketBleedPerSecond", "bleedPerSecond");
+        if (element == null || element.isJsonNull()) {
+            return DEFAULT_TICKET_BLEED_PER_SECOND;
+        }
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
+            throw new JsonParseException("ticketBleedPerSecond 必须是数字");
+        }
+        return Math.max(0, element.getAsInt());
     }
 
     /**
@@ -191,6 +299,25 @@ public final class TeamfightJsonConfig {
         }
         if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
             throw new JsonParseException("attackBatchCompletionReinforcement 必须是数字");
+        }
+        return Math.max(0, element.getAsInt());
+    }
+
+    /**
+     * RAAS 每次占领成功发给占领方的兵力。
+     * 主字段 captureReinforcement；回退 attackBatchCompletionReinforcement。
+     */
+    private static int parseCaptureReinforcement(JsonObject root) {
+        JsonElement element = firstPresent(root,
+            "captureReinforcement",
+            "attackBatchCompletionReinforcement",
+            "batchCompletionAttackReinforcement",
+            "attackCaptureReinforcement");
+        if (element == null || element.isJsonNull()) {
+            return DEFAULT_CAPTURE_REINFORCEMENT;
+        }
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
+            throw new JsonParseException("captureReinforcement 必须是数字");
         }
         return Math.max(0, element.getAsInt());
     }
@@ -236,9 +363,10 @@ public final class TeamfightJsonConfig {
         return new PlannedPointConfig(name, batch, pos1, pos2);
     }
 
-    private static void validatePoints(List<PlannedPointConfig> points) {
+    private static void validatePoints(List<PlannedPointConfig> points, boolean raasFrontline) {
         Set<String> names = new HashSet<>();
         Map<Integer, Integer> pointsPerBatch = new HashMap<>();
+        int maxPerBatch = raasFrontline ? MAX_RAAS_POINTS : MAX_POINTS_PER_BATCH;
 
         CapturePointManager manager = CapturePointManager.getInstance();
         for (PlannedPointConfig point : points) {
@@ -256,8 +384,8 @@ public final class TeamfightJsonConfig {
             }
 
             int batchCount = pointsPerBatch.merge(point.batch, 1, Integer::sum);
-            if (batchCount > MAX_POINTS_PER_BATCH) {
-                throw new JsonParseException("批次 " + point.batch + " 的据点数量超过上限 " + MAX_POINTS_PER_BATCH);
+            if (batchCount > maxPerBatch) {
+                throw new JsonParseException("批次 " + point.batch + " 的据点数量超过上限 " + maxPerBatch);
             }
         }
     }
@@ -334,7 +462,10 @@ public final class TeamfightJsonConfig {
         ));
 
         return new TeamfightConfig(totalBatches, endBehavior.toLowerCase(Locale.ROOT), reinforcements, points,
-            manager.getAttackBatchCompletionReinforcement());
+            manager.getAttackBatchCompletionReinforcement(),
+            manager.isRaasFrontline(),
+            manager.getCaptureReinforcement(),
+            manager.getTicketBleedPerSecond());
     }
 
     private static int positiveOrDefault(int preferred, int fallback) {
@@ -359,6 +490,11 @@ public final class TeamfightJsonConfig {
         root.addProperty("endBehavior", config.endBehavior);
         root.addProperty("attackBatchCompletionReinforcement",
             config.attackBatchCompletionReinforcement);
+        root.addProperty("captureReinforcement", config.captureReinforcement);
+        root.addProperty("ticketBleedPerSecond", config.ticketBleedPerSecond);
+        if (config.raasFrontline) {
+            root.addProperty("raasFrontline", true);
+        }
 
         JsonObject reinforcements = new JsonObject();
         reinforcements.addProperty(EspetroTeamBridge.ATTACK,
@@ -441,6 +577,20 @@ public final class TeamfightJsonConfig {
         return object.get(key).getAsString();
     }
 
+    private static boolean getOptionalBoolean(JsonObject object, String key, boolean defaultValue) {
+        if (!object.has(key) || object.get(key).isJsonNull()) {
+            return defaultValue;
+        }
+        JsonElement element = object.get(key);
+        if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isBoolean()) {
+            return element.getAsBoolean();
+        }
+        if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+            return Boolean.parseBoolean(element.getAsString());
+        }
+        return defaultValue;
+    }
+
     public static Path getConfigPath() {
         return snapshotPath(frozenMapId);
     }
@@ -470,16 +620,25 @@ public final class TeamfightJsonConfig {
         private final Map<String, Integer> teamReinforcements;
         private final List<PlannedPointConfig> points;
         private final int attackBatchCompletionReinforcement;
+        private final boolean raasFrontline;
+        private final int captureReinforcement;
+        private final int ticketBleedPerSecond;
 
         private TeamfightConfig(int totalBatches, String endBehavior,
                                 Map<String, Integer> teamReinforcements,
                                 List<PlannedPointConfig> points,
-                                int attackBatchCompletionReinforcement) {
+                                int attackBatchCompletionReinforcement,
+                                boolean raasFrontline,
+                                int captureReinforcement,
+                                int ticketBleedPerSecond) {
             this.totalBatches = totalBatches;
             this.endBehavior = endBehavior;
             this.teamReinforcements = teamReinforcements;
             this.points = points;
             this.attackBatchCompletionReinforcement = Math.max(0, attackBatchCompletionReinforcement);
+            this.raasFrontline = raasFrontline;
+            this.captureReinforcement = Math.max(0, captureReinforcement);
+            this.ticketBleedPerSecond = Math.max(0, ticketBleedPerSecond);
         }
     }
 

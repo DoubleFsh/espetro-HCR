@@ -30,9 +30,9 @@ class TacticalMapImageScalerTest {
     }
 
     @Test
-    void p2CacheKeyCannotReuseLegacyCompleteMarkerDirectory() {
+    void p3CacheKeyCannotReuseLegacyCompleteMarkerDirectory() {
         String hash = "a".repeat(64);
-        assertEquals(hash + "-p2", TacticalMapTileService.cacheDirectoryName(hash));
+        assertEquals(hash + "-p3", TacticalMapTileService.cacheDirectoryName(hash));
         assertNotEquals(hash, TacticalMapTileService.cacheDirectoryName(hash));
     }
 

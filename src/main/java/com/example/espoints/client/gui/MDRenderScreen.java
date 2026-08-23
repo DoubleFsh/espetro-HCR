@@ -7,7 +7,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
 import org.lwjgl.glfw.GLFW;
-import se.mickelus.mutil.gui.GuiElement;
+import org.espetro.client.aui.GuiElement;
 
 import java.io.File;
 import java.io.IOException;
@@ -22,7 +22,7 @@ import java.util.List;
 /**
  * MD文件阅读界面。
  */
-public class MDRenderScreen extends MutilScreen {
+public class MDRenderScreen extends EspetroMenuScreen {
     private static final String MD_FOLDER_NAME = "HCRmdread";
     private static final int MARGIN = 18;
     private static final int HEADER_H = 48;
@@ -66,13 +66,14 @@ public class MDRenderScreen extends MutilScreen {
 
     @Override
     public void tick() {
+        super.tick();
         if (this.width != lastWidth || this.height != lastHeight) {
-            rebuildMutilRoot();
+            rebuildMenuRoot();
         }
     }
 
     @Override
-    protected void buildMutilRoot(GuiElement root) {
+    protected void buildMenuRoot(GuiElement root) {
         lastWidth = this.width;
         lastHeight = this.height;
 
@@ -84,17 +85,17 @@ public class MDRenderScreen extends MutilScreen {
         int rightX = pageX + leftW + 12;
         int rightW = Math.max(120, pageW - leftW - 30);
 
-        root.addChild(HcrMutilWidgets.panel(pageX, pageY, pageW, pageH,
-            HcrMutilWidgets.PANEL, HcrMutilWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.panel(pageX, pageY, pageW, pageH,
+            HcrAuiWidgets.PANEL, HcrAuiWidgets.BORDER));
         buildHeader(root, pageX, pageY, pageW);
 
         int contentY = pageY + HEADER_H + 12;
         int contentH = pageY + pageH - contentY - 18;
 
-        root.addChild(HcrMutilWidgets.panel(pageX + 18, contentY, leftW, contentH,
-            HcrMutilWidgets.PANEL_SOFT, HcrMutilWidgets.BORDER));
-        root.addChild(HcrMutilWidgets.panel(rightX, contentY, rightW, contentH,
-            HcrMutilWidgets.PANEL_SOFT, HcrMutilWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.panel(pageX + 18, contentY, leftW, contentH,
+            HcrAuiWidgets.PANEL_SOFT, HcrAuiWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.panel(rightX, contentY, rightW, contentH,
+            HcrAuiWidgets.PANEL_SOFT, HcrAuiWidgets.BORDER));
 
         if (currentState == ScreenState.FILE_LIST) {
             buildFileList(root, pageX + 18, contentY, leftW, contentH, rightX, rightW);
@@ -105,25 +106,25 @@ public class MDRenderScreen extends MutilScreen {
 
     private void buildHeader(GuiElement root, int pageX, int pageY, int pageW) {
         String subtitle = currentFile == null ? "读取 HCRmdread 文件夹中的 Markdown 文档" : currentFile.getName();
-        root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 13, "MD 文件阅读器", HcrMutilWidgets.TEXT));
-        root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 29,
-            HcrMutilWidgets.trimToWidth(subtitle, Math.max(60, pageW - 150)), HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(pageX + 18, pageY + 13, "MD 文件阅读器", HcrAuiWidgets.TEXT));
+        root.addChild(HcrAuiWidgets.text(pageX + 18, pageY + 29,
+            HcrAuiWidgets.trimToWidth(subtitle, Math.max(60, pageW - 150)), HcrAuiWidgets.MUTED));
 
         if (currentState == ScreenState.FILE_CONTENT) {
-            root.addChild(HcrMutilWidgets.button(pageX + pageW - 126, pageY + 14, 50, 18, "列表", () -> {
+            root.addChild(HcrAuiWidgets.button(pageX + pageW - 126, pageY + 14, 50, 18, "列表", () -> {
                 currentState = ScreenState.FILE_LIST;
                 currentFile = null;
-                rebuildMutilRoot();
-            }).setTextColor(HcrMutilWidgets.GOLD));
+                rebuildMenuRoot();
+            }).setTextColor(HcrAuiWidgets.GOLD));
         }
-        root.addChild(HcrMutilWidgets.button(pageX + pageW - 68, pageY + 14, 50, 18, "关闭", this::onClose)
-            .setTextColor(HcrMutilWidgets.MUTED));
-        root.addChild(HcrMutilWidgets.rect(pageX + 18, pageY + HEADER_H, pageW - 36, 1, 0x35FFFFFF));
+        root.addChild(HcrAuiWidgets.button(pageX + pageW - 68, pageY + 14, 50, 18, "关闭", this::onClose)
+            .setTextColor(HcrAuiWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.rect(pageX + 18, pageY + HEADER_H, pageW - 36, 1, 0x35FFFFFF));
     }
 
     private void buildFileList(GuiElement root, int leftX, int top, int leftW, int height, int rightX, int rightW) {
-        root.addChild(HcrMutilWidgets.text(leftX + 12, top + 10, "文件列表", HcrMutilWidgets.GOLD));
-        root.addChild(HcrMutilWidgets.text(leftX + 12, top + 26, "共 " + mdFiles.size() + " 个文件", HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(leftX + 12, top + 10, "文件列表", HcrAuiWidgets.GOLD));
+        root.addChild(HcrAuiWidgets.text(leftX + 12, top + 26, "共 " + mdFiles.size() + " 个文件", HcrAuiWidgets.MUTED));
 
         ScrollableList list = new ScrollableList(leftX + 8, top + 46, leftW - 16, Math.max(30, height - 54))
             .setScrollStep(FILE_ROW_H)
@@ -131,41 +132,41 @@ public class MDRenderScreen extends MutilScreen {
         root.addChild(list);
 
         if (mdFiles.isEmpty()) {
-            list.addChild(HcrMutilWidgets.textBlock(4, 4, leftW - 32,
-                "未找到 .md 文件。", HcrMutilWidgets.MUTED));
+            list.addChild(HcrAuiWidgets.textBlock(4, 4, leftW - 32,
+                "未找到 .md 文件。", HcrAuiWidgets.MUTED));
         } else {
             int y = 0;
             for (File file : mdFiles) {
-                list.addChild(HcrMutilWidgets.button(0, y, Math.max(40, leftW - 28), 18,
-                    HcrMutilWidgets.trimToWidth(file.getName(), Math.max(32, leftW - 42)),
-                    () -> openFile(file)).setTextColor(HcrMutilWidgets.TEXT));
+                list.addChild(HcrAuiWidgets.button(0, y, Math.max(40, leftW - 28), 18,
+                    HcrAuiWidgets.trimToWidth(file.getName(), Math.max(32, leftW - 42)),
+                    () -> openFile(file)).setTextColor(HcrAuiWidgets.TEXT));
                 y += FILE_ROW_H;
             }
         }
 
-        root.addChild(HcrMutilWidgets.centeredText(rightX, top + Math.max(20, height / 2 - 12), rightW,
-            "选择左侧文件开始阅读", HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.centeredText(rightX, top + Math.max(20, height / 2 - 12), rightW,
+            "选择左侧文件开始阅读", HcrAuiWidgets.MUTED));
     }
 
     private void buildFileContent(GuiElement root, int leftX, int top, int leftW, int leftH,
                                   int rightX, int rightW, int rightH) {
-        root.addChild(HcrMutilWidgets.text(leftX + 12, top + 10, "目录", HcrMutilWidgets.GOLD));
+        root.addChild(HcrAuiWidgets.text(leftX + 12, top + 10, "目录", HcrAuiWidgets.GOLD));
         ScrollableList toc = new ScrollableList(leftX + 8, top + 30, leftW - 16, Math.max(30, leftH - 38))
             .setScrollStep(TOC_ROW_H)
             .setAlwaysShowScrollbar(true);
         root.addChild(toc);
 
         if (mdTitles.isEmpty()) {
-            toc.addChild(HcrMutilWidgets.text(4, 4, "无标题", HcrMutilWidgets.MUTED));
+            toc.addChild(HcrAuiWidgets.text(4, 4, "无标题", HcrAuiWidgets.MUTED));
         } else {
             int y = 0;
             for (MdTitle title : mdTitles) {
                 int indent = Math.min(30, Math.max(0, (title.level - 1) * 8));
-                toc.addChild(HcrMutilWidgets.button(indent, y, Math.max(36, leftW - 28 - indent), 15,
-                    HcrMutilWidgets.trimToWidth(title.text, Math.max(24, leftW - 42 - indent)),
+                toc.addChild(HcrAuiWidgets.button(indent, y, Math.max(36, leftW - 28 - indent), 15,
+                    HcrAuiWidgets.trimToWidth(title.text, Math.max(24, leftW - 42 - indent)),
                     () -> {
                         contentScrollOffset = title.lineIndex;
-                    }).setTextColor(title.level == 1 ? HcrMutilWidgets.GOLD : HcrMutilWidgets.MUTED));
+                    }).setTextColor(title.level == 1 ? HcrAuiWidgets.GOLD : HcrAuiWidgets.MUTED));
                 y += TOC_ROW_H;
             }
         }
@@ -177,7 +178,7 @@ public class MDRenderScreen extends MutilScreen {
         currentFile = file;
         loadFileContent(file, getContentWidth(this.width));
         currentState = ScreenState.FILE_CONTENT;
-        rebuildMutilRoot();
+        rebuildMenuRoot();
     }
 
     private int getContentWidth(int screenWidth) {
@@ -316,7 +317,7 @@ public class MDRenderScreen extends MutilScreen {
             if (currentState == ScreenState.FILE_CONTENT) {
                 currentState = ScreenState.FILE_LIST;
                 currentFile = null;
-                rebuildMutilRoot();
+                rebuildMenuRoot();
                 return true;
             }
             onClose();

@@ -9,14 +9,14 @@ import com.example.espoints.util.EspetroTeamBridge;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
-import se.mickelus.mutil.gui.GuiElement;
+import org.espetro.client.aui.GuiElement;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
-public class CapturePointDetailsScreen extends MutilScreen {
+public class CapturePointDetailsScreen extends EspetroMenuScreen {
 
     private static final int MARGIN = 18;
     private static final int PANEL_MIN_W = 340;
@@ -77,6 +77,7 @@ public class CapturePointDetailsScreen extends MutilScreen {
 
     @Override
     public void tick() {
+        super.tick();
         int dataHash = getDataHash();
         if (dataHash != lastDataHash || this.width != lastWidth || this.height != lastHeight) {
             rebuildForData();
@@ -85,12 +86,12 @@ public class CapturePointDetailsScreen extends MutilScreen {
 
     private void rebuildForData() {
         if (this.minecraft != null && this.minecraft.screen == this && this.width > 0 && this.height > 0) {
-            rebuildMutilRoot();
+            rebuildMenuRoot();
         }
     }
 
     @Override
-    protected void buildMutilRoot(GuiElement root) {
+    protected void buildMenuRoot(GuiElement root) {
         this.lastWidth = this.width;
         this.lastHeight = this.height;
         this.lastDataHash = getDataHash();
@@ -101,8 +102,8 @@ public class CapturePointDetailsScreen extends MutilScreen {
         int pageW = Math.max(PANEL_MIN_W, width - MARGIN * 2);
         int pageH = Math.max(PANEL_MIN_H, height - MARGIN * 2);
 
-        root.addChild(HcrMutilWidgets.panel(pageX, pageY, pageW, pageH,
-            HcrMutilWidgets.PANEL, HcrMutilWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.panel(pageX, pageY, pageW, pageH,
+            HcrAuiWidgets.PANEL, HcrAuiWidgets.BORDER));
 
         buildHeader(root, pageX, pageY, pageW);
 
@@ -115,29 +116,29 @@ public class CapturePointDetailsScreen extends MutilScreen {
     }
 
     private void buildHeader(GuiElement root, int pageX, int pageY, int pageW) {
-        root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 13, "据点占领情况", HcrMutilWidgets.TEXT));
-        root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 29, "仅显示据点占领状态", HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(pageX + 18, pageY + 13, "据点占领情况", HcrAuiWidgets.TEXT));
+        root.addChild(HcrAuiWidgets.text(pageX + 18, pageY + 29, "仅显示据点占领状态", HcrAuiWidgets.MUTED));
 
-        HcrMutilWidgets.ActionButton refresh = HcrMutilWidgets.button(
+        HcrAuiWidgets.ActionButton refresh = HcrAuiWidgets.button(
                 pageX + pageW - 126, pageY + 14, 50, 18, "刷新", this::requestOverview)
             .setColors(0x00000000, 0x40323B4A, 0x503A3020)
-            .setBorderColor(HcrMutilWidgets.BORDER)
-            .setTextColor(HcrMutilWidgets.GOLD);
+            .setBorderColor(HcrAuiWidgets.BORDER)
+            .setTextColor(HcrAuiWidgets.GOLD);
         root.addChild(refresh);
 
-        HcrMutilWidgets.ActionButton close = HcrMutilWidgets.button(
+        HcrAuiWidgets.ActionButton close = HcrAuiWidgets.button(
                 pageX + pageW - 68, pageY + 14, 50, 18, "关闭", this::onClose)
             .setColors(0x00000000, 0x40323B4A, 0x503A3020)
-            .setBorderColor(HcrMutilWidgets.BORDER)
-            .setTextColor(HcrMutilWidgets.MUTED);
+            .setBorderColor(HcrAuiWidgets.BORDER)
+            .setTextColor(HcrAuiWidgets.MUTED);
         root.addChild(close);
 
-        root.addChild(HcrMutilWidgets.rect(pageX + 18, pageY + HEADER_H, pageW - 36, 1, 0x35FFFFFF));
+        root.addChild(HcrAuiWidgets.rect(pageX + 18, pageY + HEADER_H, pageW - 36, 1, 0x35FFFFFF));
     }
 
     private void buildTable(GuiElement root, List<CapturePoint> points, int x, int y, int width, int height) {
-        root.addChild(HcrMutilWidgets.panel(x, y, width, height,
-            HcrMutilWidgets.PANEL_SOFT, HcrMutilWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.panel(x, y, width, height,
+            HcrAuiWidgets.PANEL_SOFT, HcrAuiWidgets.BORDER));
 
         int rowW = width - 24 - SCROLLBAR_RESERVED_W;
         boolean narrow = rowW < 520;
@@ -147,7 +148,7 @@ public class CapturePointDetailsScreen extends MutilScreen {
         int listH = Math.max(ROW_H, height - TABLE_HEADER_H - 12);
 
         addTableHeaders(root, x + 12, y + 12, rowW, narrow);
-        root.addChild(HcrMutilWidgets.rect(x + 12, y + 29, width - 24, 1, HcrMutilWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.rect(x + 12, y + 29, width - 24, 1, HcrAuiWidgets.BORDER));
 
         ScrollableList list = new ScrollableList(listX, listY, listW, listH)
             .setScrollStep(ROW_H + ROW_GAP)
@@ -155,7 +156,7 @@ public class CapturePointDetailsScreen extends MutilScreen {
         root.addChild(list);
 
         if (points.isEmpty()) {
-            list.addChild(HcrMutilWidgets.text(10, 10, "暂无据点数据", HcrMutilWidgets.MUTED));
+            list.addChild(HcrAuiWidgets.text(10, 10, "暂无据点数据", HcrAuiWidgets.MUTED));
             return;
         }
 
@@ -169,33 +170,33 @@ public class CapturePointDetailsScreen extends MutilScreen {
 
     private void addTableHeaders(GuiElement root, int x, int y, int rowW, boolean narrow) {
         int[] cols = getColumns(rowW, narrow);
-        root.addChild(HcrMutilWidgets.text(x + cols[0], y, "据点", HcrMutilWidgets.MUTED));
-        root.addChild(HcrMutilWidgets.text(x + cols[1], y, "占领情况", HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(x + cols[0], y, "据点", HcrAuiWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(x + cols[1], y, "占领情况", HcrAuiWidgets.MUTED));
         if (!narrow) {
-            root.addChild(HcrMutilWidgets.text(x + cols[2], y, "占领方", HcrMutilWidgets.MUTED));
+            root.addChild(HcrAuiWidgets.text(x + cols[2], y, "占领方", HcrAuiWidgets.MUTED));
         }
-        root.addChild(HcrMutilWidgets.text(x + cols[3], y, "进度", HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(x + cols[3], y, "进度", HcrAuiWidgets.MUTED));
     }
 
     private void addPointRow(GuiElement parent, CapturePoint point, int x, int y, int w, int h,
                              boolean even, boolean narrow) {
         int[] cols = getColumns(w, narrow);
         int stateColor = getStateColor(point);
-        parent.addChild(HcrMutilWidgets.rect(x, y, w, h, even ? ROW_BG : ROW_BG_ALT));
-        parent.addChild(HcrMutilWidgets.rect(x, y, 3, h, stateColor));
+        parent.addChild(HcrAuiWidgets.rect(x, y, w, h, even ? ROW_BG : ROW_BG_ALT));
+        parent.addChild(HcrAuiWidgets.rect(x, y, 3, h, stateColor));
 
-        parent.addChild(HcrMutilWidgets.text(x + cols[0], y + 6,
-            HcrMutilWidgets.trimToWidth(point.getName(), cols[1] - cols[0] - 8),
-            HcrMutilWidgets.TEXT));
+        parent.addChild(HcrAuiWidgets.text(x + cols[0], y + 6,
+            HcrAuiWidgets.trimToWidth(point.getName(), cols[1] - cols[0] - 8),
+            HcrAuiWidgets.TEXT));
 
         String statusText = narrow ? getOccupancyText(point) : getStatusText(point);
         int statusMaxW = (narrow ? cols[3] : cols[2]) - cols[1] - 8;
-        parent.addChild(HcrMutilWidgets.text(x + cols[1], y + 6,
-            HcrMutilWidgets.trimToWidth(statusText, statusMaxW), stateColor));
+        parent.addChild(HcrAuiWidgets.text(x + cols[1], y + 6,
+            HcrAuiWidgets.trimToWidth(statusText, statusMaxW), stateColor));
 
         if (!narrow) {
-            parent.addChild(HcrMutilWidgets.text(x + cols[2], y + 6,
-                HcrMutilWidgets.trimToWidth(getCaptorText(point),
+            parent.addChild(HcrAuiWidgets.text(x + cols[2], y + 6,
+                HcrAuiWidgets.trimToWidth(getCaptorText(point),
                     Math.max(48, cols[3] - cols[2] - 8)),
                 getCaptorColor(point)));
         }
@@ -205,13 +206,13 @@ public class CapturePointDetailsScreen extends MutilScreen {
         int barX = x + cols[3];
         int barY = y + 9;
         int barW = Math.max(42, w - cols[3] - progressTextW - 8);
-        parent.addChild(HcrMutilWidgets.rect(barX, barY, barW, 8, 0xFF27364B));
+        parent.addChild(HcrAuiWidgets.rect(barX, barY, barW, 8, 0xFF27364B));
         int progressW = point.getProgress() * barW / 100;
         if (progressW > 0) {
-            parent.addChild(HcrMutilWidgets.rect(barX, barY, progressW, 8, stateColor));
+            parent.addChild(HcrAuiWidgets.rect(barX, barY, progressW, 8, stateColor));
         }
-        parent.addChild(HcrMutilWidgets.text(barX + barW + 5, y + 6,
-            progressText, HcrMutilWidgets.MUTED));
+        parent.addChild(HcrAuiWidgets.text(barX + barW + 5, y + 6,
+            progressText, HcrAuiWidgets.MUTED));
     }
 
     private int[] getColumns(int rowW, boolean narrow) {
@@ -289,9 +290,9 @@ public class CapturePointDetailsScreen extends MutilScreen {
             return getCaptorColor(point);
         }
         if (isContested(point)) {
-            return HcrMutilWidgets.WARNING;
+            return HcrAuiWidgets.WARNING;
         }
-        return HcrMutilWidgets.MUTED;
+        return HcrAuiWidgets.MUTED;
     }
 
     private String getCaptorText(CapturePoint point) {
@@ -315,12 +316,12 @@ public class CapturePointDetailsScreen extends MutilScreen {
     private int getCaptorColor(CapturePoint point) {
         String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(point.getCaptorName());
         if (EspetroTeamBridge.ATTACK.equals(canonicalTeam)) {
-            return HcrMutilWidgets.ATTACK;
+            return HcrAuiWidgets.ATTACK;
         }
         if (EspetroTeamBridge.DEFEND.equals(canonicalTeam)) {
-            return HcrMutilWidgets.DEFEND;
+            return HcrAuiWidgets.DEFEND;
         }
-        return HcrMutilWidgets.TEXT;
+        return HcrAuiWidgets.TEXT;
     }
 
     @Override

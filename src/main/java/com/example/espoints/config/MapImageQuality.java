@@ -3,8 +3,8 @@ package com.example.espoints.config;
 /** Client-only tactical map image quality preference. */
 public enum MapImageQuality {
     PERFORMANCE(0, "性能"),
-    BALANCED(1, "平衡"),
-    HIGH(2, "高清");
+    BALANCED(2, "平衡"),
+    HIGH(3, "高清");
 
     private final int refinementLevels;
     private final String displayName;

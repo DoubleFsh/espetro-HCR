@@ -12,6 +12,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TacticalMapLodPlannerTest {
+    @Test
+    void arrivalLevelSitsTwoStepsAboveTargetAndNeverUsesPreview() {
+        assertEquals(2, TacticalMapLodPlanner.arrivalLevel(LAYOUT, 0));
+        assertEquals(3, TacticalMapLodPlanner.arrivalLevel(LAYOUT, 1));
+        assertEquals(2, TacticalMapLodPlanner.arrivalLevel(LAYOUT, 2));
+        assertEquals(4, TacticalMapLodPlanner.arrivalLevel(LAYOUT, 4));
+    }
+
     private static final long CACHE_BYTES = 64L * 1024L * 1024L;
     private static final TacticalMapPyramidLayout LAYOUT =
         new TacticalMapPyramidLayout(5904, 6720);
@@ -56,11 +64,11 @@ class TacticalMapLodPlannerTest {
             LAYOUT, MapImageQuality.HIGH, closeView, 2_000L,
             CACHE_BYTES, states);
         assertEquals(0, l0.baseLevel());
-        assertEquals(List.of(0), levels(l0));
+        assertEquals(List.of(2, 0), levels(l0));
     }
 
     @Test
-    void waits250MillisAndViewMovementRestartsStabilityWindow() {
+    void waitsUntilStableAndViewMovementRestartsStabilityWindow() {
         MutableStates states = new MutableStates();
         TacticalMapLodPlanner planner = new TacticalMapLodPlanner();
         TacticalMapLodPlanner.Viewport view =
@@ -71,10 +79,10 @@ class TacticalMapLodPlannerTest {
         states.ready(initial.layers().get(0).visibleTiles());
 
         assertEquals(List.of(2), levels(planner.plan(
-            LAYOUT, MapImageQuality.BALANCED, view, 10_249L,
+            LAYOUT, MapImageQuality.BALANCED, view, 10_079L,
             CACHE_BYTES, states)));
         assertEquals(List.of(2, 1), levels(planner.plan(
-            LAYOUT, MapImageQuality.BALANCED, view, 10_250L,
+            LAYOUT, MapImageQuality.BALANCED, view, 10_080L,
             CACHE_BYTES, states)));
 
         TacticalMapLodPlanner.Viewport dragged =
@@ -101,7 +109,7 @@ class TacticalMapLodPlannerTest {
         TacticalMapLodPlanner.Plan stable = planner.plan(
             LAYOUT, MapImageQuality.HIGH, full4k, 1_250L,
             CACHE_BYTES, states);
-        assertEquals(List.of(1), levels(stable));
+        assertEquals(List.of(3, 1), levels(stable));
 
         TacticalMapLodPlanner localPlanner = new TacticalMapLodPlanner();
         TacticalMapLodPlanner.Viewport local =
@@ -148,6 +156,28 @@ class TacticalMapLodPlannerTest {
         assertTrue(planner.plan(
             LAYOUT, MapImageQuality.BALANCED, view, 1_251L,
             CACHE_BYTES, states).requests().isEmpty());
+    }
+
+    @Test
+    void cachedPlannerReusesOneModelAcrossOneThousandIdleFrames() {
+        MutableStates states = new MutableStates();
+        TacticalMapLodPlanner planner = new TacticalMapLodPlanner();
+        TacticalMapLodPlanner.Viewport view =
+            new TacticalMapLodPlanner.Viewport(0.2D, 0.2D, 0.45D, 0.45D, 512, 512);
+        TacticalMapLodPlanner.Plan first = planner.planCached(
+            LAYOUT, MapImageQuality.BALANCED, view, 1_000L,
+            CACHE_BYTES, 17L, 3L, states);
+        for (int frame = 1; frame <= 1_000; frame++) {
+            TacticalMapLodPlanner.Plan next = planner.planCached(
+                LAYOUT, MapImageQuality.BALANCED, view,
+                1_000L + frame % 40, CACHE_BYTES, 17L, 3L, states);
+            assertTrue(first == next);
+        }
+        assertEquals(1L, planner.rebuildCount());
+
+        planner.planCached(LAYOUT, MapImageQuality.BALANCED, view,
+            1_100L, CACHE_BYTES, 17L, 4L, states);
+        assertEquals(2L, planner.rebuildCount());
     }
 
     private static List<Integer> levels(TacticalMapLodPlanner.Plan plan) {

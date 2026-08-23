@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.example.espoints.network.SyncPlayerPositionsMessageTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-07-29T18:59:01" hostname="cachyos-x8664" time="0.007">
-  <properties/>
-  <testcase name="fortyAndHundredPlayerWorstCaseFramesStayInsideTrafficBudget()" classname="com.example.espoints.network.SyncPlayerPositionsMessageTest" time="0.003"/>
-  <testcase name="rejectsOversizedAndExpiredSessionFrames()" classname="com.example.espoints.network.SyncPlayerPositionsMessageTest" time="0.002"/>
-  <testcase name="roundTripsFixedPointCoordinatesAndPackedYaw()" classname="com.example.espoints.network.SyncPlayerPositionsMessageTest" time="0.0"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

@@ -32,6 +32,21 @@ class TacticalMapPyramidLayoutTest {
     }
 
     @Test
+    void visibleWindowIncludesEveryIntersectingRow() {
+        TacticalMapPyramidLayout layout = new TacticalMapPyramidLayout(5904, 6720);
+        // 1127-world-unit view is ~2.2 L0 tiles tall; both rows plus the
+        // overlapping third row must be selected or a coarse stripe appears.
+        double minY = 0.40D;
+        double maxY = 0.40D + 1127.0D / 6719.0D;
+        List<TacticalMapPyramidLayout.TileCoordinate> tiles =
+            layout.visibleTiles(0, 0.40D, minY, 0.55D, maxY, 0);
+        int minRow = tiles.stream().mapToInt(TacticalMapPyramidLayout.TileCoordinate::y).min().orElse(-1);
+        int maxRow = tiles.stream().mapToInt(TacticalMapPyramidLayout.TileCoordinate::y).max().orElse(-1);
+        assertTrue(maxRow - minRow >= 2);
+        assertTrue(layout.tilesCover(0, tiles, 0.40D, minY, 0.55D, maxY));
+    }
+
+    @Test
     void choosesLodAndAddsOnlyOnePrefetchRing() {
         TacticalMapPyramidLayout layout =
             new TacticalMapPyramidLayout(5904, 6720);

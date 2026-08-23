@@ -70,7 +70,7 @@ public class ModConfig {
                 .defineInRange("tacticalMapDiskCacheMiB", 512, 64, 4096);
         tacticalMapPlayerTransferKiBps = BUILDER
                 .comment("每名玩家战术地图瓦片传输预算（KiB/s）")
-                .defineInRange("tacticalMapPlayerTransferKiBps", 256, 32, 4096);
+                .defineInRange("tacticalMapPlayerTransferKiBps", 512, 32, 4096);
         tacticalMapGlobalTransferKiBps = BUILDER
                 .comment("全服战术地图瓦片传输预算（KiB/s）")
                 .defineInRange("tacticalMapGlobalTransferKiBps", 4096, 256, 65536);

@@ -79,7 +79,6 @@ public class ClientEventHandler {
         TacticalMapJsonConfig.apply(TacticalMapJsonConfig.createDefault(), "client disconnected");
         ClientBattleState.get().clear();
         ClientPlayerIdentityState.get().clear();
-        ClientTacticalMapTileCache.get().clear();
         com.example.espoints.tactical.ClientTacticalMarkerState.clear();
         tacticalMarkerVisibilityTicks = 0;
     }
@@ -88,6 +87,10 @@ public class ClientEventHandler {
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END) {
             Minecraft mc = Minecraft.getInstance();
+            ClientTacticalMapTileCache.get().tickRequests();
+            // Visible tiles are now mostly local-cache hits; allow a short burst so
+            // the first open can replace the blurry preview within a couple of frames.
+            ClientTacticalMapTileCache.get().drainUploadQueue(8, 8_000_000L);
             
             // 处理打开GUI按键
             boolean isGuiKeyPressed = OPEN_GUI_KEY.isDown();

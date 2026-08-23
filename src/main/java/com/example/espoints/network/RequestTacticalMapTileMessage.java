@@ -2,7 +2,6 @@ package com.example.espoints.network;
 
 import com.example.espoints.tile.TacticalMapTileService;
 import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
 
@@ -41,22 +40,8 @@ public record RequestTacticalMapTileMessage(long session, int level, int x, int 
         NetworkEvent.Context context = contextSupplier.get();
         ServerPlayer sender = context.getSender();
         if (sender != null && allow(sender.getUUID(), System.currentTimeMillis())) {
-            TacticalMapTileService service = TacticalMapTileService.get();
-            service.request(message.session, message.level, message.x, message.y)
-                .thenAccept(bytes -> {
-                    MinecraftServer server = sender.getServer();
-                    if (server != null) {
-                        server.execute(() -> {
-                            if (service.descriptor().session() == message.session
-                                && service.allowTransfer(sender.getUUID(), bytes.length)) {
-                                SyncTacticalMapTileMessage.sendToPlayer(
-                                    sender, message.session, message.level,
-                                    message.x, message.y, bytes);
-                            }
-                        });
-                    }
-                })
-                .exceptionally(error -> null);
+            TacticalMapTileService.get().enqueue(
+                sender.getUUID(), message.session, message.level, message.x, message.y);
         }
         context.setPacketHandled(true);
     }
@@ -64,6 +49,7 @@ public record RequestTacticalMapTileMessage(long session, int level, int x, int 
     public static void clearPlayer(UUID playerId) {
         if (playerId != null) {
             REQUESTS.remove(playerId);
+            TacticalMapTileService.get().removePlayer(playerId);
         }
     }
 

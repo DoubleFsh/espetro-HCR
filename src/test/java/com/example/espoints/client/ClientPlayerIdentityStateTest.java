@@ -37,4 +37,19 @@ class ClientPlayerIdentityStateTest {
         assertEquals("Alpha", resolved.get(player).getName());
         assertEquals(2, resolved.get(player).getSquadId());
     }
+
+    @Test
+    void identityRevisionChangesOnlyOnPublishedTablesAndClear() {
+        ClientPlayerIdentityState state = ClientPlayerIdentityState.get();
+        state.clear();
+        long initial = state.revision();
+        UUID uuid = UUID.randomUUID();
+        assertTrue(state.replace(7L, List.of(
+            new SyncPlayerIdentityMessage.Identity(1, uuid, "name", "team", 1, false, false))));
+        assertEquals(initial + 1L, state.revision());
+        assertFalse(state.replace(6L, List.of()));
+        assertEquals(initial + 1L, state.revision());
+        state.clear();
+        assertEquals(initial + 2L, state.revision());
+    }
 }

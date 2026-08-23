@@ -130,6 +130,19 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
     // 显式声明可靠的依赖源
+    // Fixed local mod artifacts must win over Maven metadata that can carry a
+    // different Forge userdev dependency into ForgeGradle's deobf transform.
+    flatDir {
+        dirs '../../Java/Projects/Espetro/build/libs',
+            '../../Java/Projects/Tetrachord-Lib/build/libs'
+    }
+    mavenLocal {
+        // Tetrachord's published Gradle metadata contains its own Forge
+        // userdev dependency; consume the fixed sibling mod JAR instead.
+        content {
+            excludeGroup "com.hexagram2021.tetrachordlib"
+        }
+    }
     mavenCentral() // Maven Central 仓库
     maven {
         name = "Forge Maven"
@@ -142,14 +155,18 @@ repositories {
             includeGroup "curse.maven"
         }
     }
+    maven {
+        name = "Sighs Public"
+        url = "https://maven.sighs.cc/repository/maven-public/"
+        content {
+            includeGroup "com.sighs"
+        }
+    }
     // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
     // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
     // flatDir {
     //     dir 'libs'
     // }
-    flatDir {
-        dirs '../../Java/Projects/Espetro/build/libs'
-    }
 }
 
 dependencies {
@@ -159,10 +176,16 @@ dependencies {
     // If the group id is "net.minecraft" and the artifact id is one of ["client", "server", "joined"],
     // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
-    implementation fg.deobf("curse.maven:mutil-351914:7772906")
     implementation fg.deobf("curse.maven:ping-wheel-734339:7409916")
+    implementation fg.deobf("com.sighs:ApricityUI-forge-1.20.1:${apricityui_version}")
     compileOnly fg.deobf("org.espetro:espetro:${espetro_version}")
     runtimeOnly fg.deobf("org.espetro:espetro:${espetro_version}")
+    // Exact fixed-commit artifact, resolved from Maven Local or the sibling
+    // checkout flatDir so ForgeGradle can deobfuscate it normally.
+    implementation(fg.deobf(
+        "com.hexagram2021.tetrachordlib:tetrachordlib:${tetrachord_version}")) {
+        transitive = false
+    }
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
     testImplementation 'org.junit.jupiter:junit-jupiter-params:5.10.0'
@@ -196,7 +219,8 @@ tasks.named('processResources', ProcessResources).configure {
             mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
             mod_authors: mod_authors, mod_description: mod_description, espetro_version: espetro_version,
             pingwheel_version: pingwheel_version, auratip_version: auratip_version,
-            oelib_version: oelib_version,
+            oelib_version: oelib_version, apricityui_version: apricityui_version,
+            tetrachord_version: tetrachord_version,
     ]
     inputs.properties replaceProperties
 

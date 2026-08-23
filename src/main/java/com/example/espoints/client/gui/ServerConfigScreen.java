@@ -4,14 +4,14 @@ import com.example.espoints.config.ModConfig;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.common.ForgeConfigSpec;
-import se.mickelus.mutil.gui.GuiElement;
+import org.espetro.client.aui.GuiElement;
 
 import java.util.regex.Pattern;
 
 /**
  * 服务端配置界面。
  */
-public class ServerConfigScreen extends MutilScreen {
+public class ServerConfigScreen extends EspetroMenuScreen {
     private static final Component TITLE = Component.literal("服务端配置");
     private static final int MARGIN = 18;
     private static final int HEADER_H = 48;
@@ -30,14 +30,14 @@ public class ServerConfigScreen extends MutilScreen {
     }
 
     @Override
-    protected void buildMutilRoot(GuiElement root) {
+    protected void buildMenuRoot(GuiElement root) {
         int pageX = MARGIN;
         int pageY = MARGIN;
         int pageW = Math.max(360, this.width - MARGIN * 2);
         int pageH = Math.max(220, this.height - MARGIN * 2);
 
-        root.addChild(HcrMutilWidgets.panel(pageX, pageY, pageW, pageH,
-            HcrMutilWidgets.PANEL, HcrMutilWidgets.BORDER));
+        root.addChild(HcrAuiWidgets.panel(pageX, pageY, pageW, pageH,
+            HcrAuiWidgets.PANEL, HcrAuiWidgets.BORDER));
         buildHeader(root, pageX, pageY, pageW);
 
         int listX = pageX + 18;
@@ -55,7 +55,7 @@ public class ServerConfigScreen extends MutilScreen {
         y = addBooleanRow(list, y, "启用据点信息轮播", ModConfig.enableCarousel);
 
         y = addSection(list, y + GAP, "队伍配置");
-        y = addInfoRow(list, y, "队伍来源", "Espetro 进攻方 / 防守方");
+        y = addInfoRow(list, y, "队伍来源", "Espetro 阵营（AAS: 进攻/防守 · RAAS: 阵营A/B）");
         y = addBooleanRow(list, y, "显示敌我标识", ModConfig.enableTeamIndicator);
 
         y = addSection(list, y + GAP, "性能配置");
@@ -78,31 +78,31 @@ public class ServerConfigScreen extends MutilScreen {
     }
 
     private void buildHeader(GuiElement root, int pageX, int pageY, int pageW) {
-        root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 13, "服务端配置", HcrMutilWidgets.TEXT));
-        root.addChild(HcrMutilWidgets.text(pageX + 18, pageY + 29, "服务器规则、奖励与行动模式参数", HcrMutilWidgets.MUTED));
+        root.addChild(HcrAuiWidgets.text(pageX + 18, pageY + 13, "服务端配置", HcrAuiWidgets.TEXT));
+        root.addChild(HcrAuiWidgets.text(pageX + 18, pageY + 29, "服务器规则、奖励与行动模式参数", HcrAuiWidgets.MUTED));
 
-        root.addChild(HcrMutilWidgets.button(pageX + pageW - 68, pageY + 14, 50, 18, "完成", this::onClose)
-            .setTextColor(HcrMutilWidgets.GOLD));
-        root.addChild(HcrMutilWidgets.rect(pageX + 18, pageY + HEADER_H, pageW - 36, 1, 0x35FFFFFF));
+        root.addChild(HcrAuiWidgets.button(pageX + pageW - 68, pageY + 14, 50, 18, "完成", this::onClose)
+            .setTextColor(HcrAuiWidgets.GOLD));
+        root.addChild(HcrAuiWidgets.rect(pageX + 18, pageY + HEADER_H, pageW - 36, 1, 0x35FFFFFF));
     }
 
     private int addSection(GuiElement parent, int y, String title) {
-        parent.addChild(HcrMutilWidgets.rect(0, y + SECTION_H - 3, Math.max(1, parent.getWidth() - 12), 1, 0x35FFFFFF));
-        parent.addChild(HcrMutilWidgets.text(0, y + 5, title, HcrMutilWidgets.GOLD));
+        parent.addChild(HcrAuiWidgets.rect(0, y + SECTION_H - 3, Math.max(1, parent.getWidth() - 12), 1, 0x35FFFFFF));
+        parent.addChild(HcrAuiWidgets.text(0, y + 5, title, HcrAuiWidgets.GOLD));
         return y + SECTION_H;
     }
 
     private int addBooleanRow(GuiElement parent, int y, String label, ForgeConfigSpec.BooleanValue configValue) {
         addRowShell(parent, y, label);
-        HcrMutilWidgets.ActionButton toggle = HcrMutilWidgets.button(
+        HcrAuiWidgets.ActionButton toggle = HcrAuiWidgets.button(
             Math.max(0, parent.getWidth() - INPUT_W - 12), y + 4, INPUT_W, 20,
             configValue.get() ? "是" : "否",
             () -> {
                 configValue.set(!configValue.get());
                 saveConfig();
-                rebuildMutilRoot();
+                rebuildMenuRoot();
             }
-        ).setSelected(configValue.get()).setTextColor(configValue.get() ? HcrMutilWidgets.POSITIVE : HcrMutilWidgets.MUTED);
+        ).setSelected(configValue.get()).setTextColor(configValue.get() ? HcrAuiWidgets.POSITIVE : HcrAuiWidgets.MUTED);
         parent.addChild(toggle);
         return y + ROW_H + GAP;
     }
@@ -110,13 +110,13 @@ public class ServerConfigScreen extends MutilScreen {
     private int addInfoRow(GuiElement parent, int y, String label, String value) {
         addRowShell(parent, y, label);
         int x = Math.max(0, parent.getWidth() - INPUT_W - 12);
-        parent.addChild(HcrMutilWidgets.text(x, y + 9, value, HcrMutilWidgets.MUTED));
+        parent.addChild(HcrAuiWidgets.text(x, y + 9, value, HcrAuiWidgets.MUTED));
         return y + ROW_H + GAP;
     }
 
     private int addIntRow(GuiElement parent, int y, String label, ForgeConfigSpec.IntValue configValue, int min, int max) {
         addRowShell(parent, y, label);
-        parent.addChild(new HcrMutilWidgets.TextInput(
+        parent.addChild(new HcrAuiWidgets.TextInput(
             Math.max(0, parent.getWidth() - INPUT_W - 12), y + 4, INPUT_W, 20,
             String.valueOf(configValue.get()), 8, INT_PATTERN,
             value -> {
@@ -138,7 +138,7 @@ public class ServerConfigScreen extends MutilScreen {
 
     private int addDoubleRow(GuiElement parent, int y, String label, ForgeConfigSpec.DoubleValue configValue, double min, double max) {
         addRowShell(parent, y, label);
-        parent.addChild(new HcrMutilWidgets.TextInput(
+        parent.addChild(new HcrAuiWidgets.TextInput(
             Math.max(0, parent.getWidth() - INPUT_W - 12), y + 4, INPUT_W, 20,
             String.valueOf(configValue.get()), 8, DOUBLE_PATTERN,
             value -> {
@@ -160,8 +160,8 @@ public class ServerConfigScreen extends MutilScreen {
 
     private void addRowShell(GuiElement parent, int y, String label) {
         int rowW = Math.max(1, parent.getWidth() - 12);
-        parent.addChild(HcrMutilWidgets.rect(0, y, rowW, ROW_H, 0x50404040));
-        parent.addChild(HcrMutilWidgets.text(10, y + 9, label, HcrMutilWidgets.TEXT));
+        parent.addChild(HcrAuiWidgets.rect(0, y, rowW, ROW_H, 0x50404040));
+        parent.addChild(HcrAuiWidgets.text(10, y + 9, label, HcrAuiWidgets.TEXT));
     }
 
     private void saveConfig() {

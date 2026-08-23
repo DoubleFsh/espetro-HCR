@@ -168,6 +168,14 @@ public final class TacticalMarkRadialController {
         return isActiveBattlefield(Minecraft.getInstance());
     }
 
+    static List<String> menuSlotIds() {
+        List<String> ids = new ArrayList<>();
+        for (TacticalMarkerType type : TacticalMarkerType.selectableValues()) {
+            ids.add("espoints.mark." + type.name());
+        }
+        return ids;
+    }
+
     private static boolean isActiveBattlefield(Minecraft mc) {
         if (mc == null || mc.player == null || mc.level == null) {
             return false;

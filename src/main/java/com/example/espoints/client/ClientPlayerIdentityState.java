@@ -15,6 +15,7 @@ public final class ClientPlayerIdentityState {
         new ClientPlayerIdentityState();
 
     private long session = Long.MIN_VALUE;
+    private long revision;
     private Map<Integer, SyncPlayerIdentityMessage.Identity> identities = Map.of();
 
     private ClientPlayerIdentityState() {
@@ -37,6 +38,7 @@ public final class ClientPlayerIdentityState {
         }
         session = incomingSession;
         identities = Map.copyOf(next);
+        revision++;
         return true;
     }
 
@@ -65,5 +67,10 @@ public final class ClientPlayerIdentityState {
     public synchronized void clear() {
         session = Long.MIN_VALUE;
         identities = Map.of();
+        revision++;
+    }
+
+    public synchronized long revision() {
+        return revision;
     }
 }

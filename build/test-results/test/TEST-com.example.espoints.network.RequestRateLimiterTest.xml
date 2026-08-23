@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.example.espoints.network.RequestRateLimiterTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-07-29T18:59:01" hostname="cachyos-x8664" time="0.01">
-  <properties/>
-  <testcase name="isolatesChannelsAndCleansPlayerLifecycleState()" classname="com.example.espoints.network.RequestRateLimiterTest" time="0.01"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

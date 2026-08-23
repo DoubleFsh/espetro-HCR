@@ -1,6 +1,5 @@
 package com.example.espoints.network;
 
-import com.example.espoints.client.ClientTacticalMapTileCache;
 import com.example.espoints.tile.TacticalMapPyramidLayout;
 import com.example.espoints.tile.TacticalMapTileService;
 import net.minecraft.network.FriendlyByteBuf;
@@ -12,6 +11,8 @@ import java.util.function.Supplier;
 
 /** Small map descriptor; full PNG bytes are never sent or decoded on open. */
 public final class SyncTacticalMapBackgroundMessage {
+    private static final String CLIENT_CACHE_CLASS =
+        "com.example.espoints.client.ClientTacticalMapTileCache";
     private final TacticalMapTileService.Descriptor descriptor;
 
     private SyncTacticalMapBackgroundMessage(TacticalMapTileService.Descriptor descriptor) {
@@ -66,43 +67,64 @@ public final class SyncTacticalMapBackgroundMessage {
         NetworkEvent.Context context = contextSupplier.get();
         context.enqueueWork(() -> {
             if (context.getDirection().getReceptionSide().isClient()) {
-                ClientTacticalMapTileCache.get().applyDescriptor(message.descriptor);
+                applyOnClient(message.descriptor);
             }
         });
         context.setPacketHandled(true);
     }
 
-    public static void sendToPlayer(ServerPlayer player) {
+    private static void applyOnClient(TacticalMapTileService.Descriptor descriptor) {
+        try {
+            Class<?> type = Class.forName(CLIENT_CACHE_CLASS);
+            Object cache = type.getMethod("get").invoke(null);
+            type.getMethod("applyDescriptor", TacticalMapTileService.Descriptor.class)
+                .invoke(cache, descriptor);
+        } catch (ReflectiveOperationException error) {
+            throw new IllegalStateException(
+                "Unable to apply tactical map descriptor on client", error);
+        }
+    }
+
+    public static void applyDescriptorOnClient(TacticalMapTileService.Descriptor descriptor) {
+        applyOnClient(descriptor);
+    }
+
+    public static void sendDescriptorOnly(ServerPlayer player) {
         TacticalMapTileService.Descriptor descriptor =
             TacticalMapTileService.get().descriptor();
         NetworkHandler.INSTANCE.send(
             PacketDistributor.PLAYER.with(() -> player),
             new SyncTacticalMapBackgroundMessage(descriptor));
         if (descriptor.present()) {
-            TacticalMapTileService.get()
-                .request(descriptor.session(), descriptor.maxLevel(), 0, 0)
-                .thenAccept(bytes -> {
-                    var server = player.getServer();
-                    if (server != null) {
-                        server.execute(() -> {
-                            TacticalMapTileService service = TacticalMapTileService.get();
-                            if (service.descriptor().session() == descriptor.session()
-                                && service.allowTransfer(player.getUUID(), bytes.length)) {
-                                SyncTacticalMapTileMessage.sendToPlayer(
-                                    player, descriptor.session(), descriptor.maxLevel(),
-                                    0, 0, bytes);
-                            }
-                        });
-                    }
-                })
-                .exceptionally(error -> null);
+            com.example.espoints.ESPointsMod.LOGGER.info(
+                "已向 {} 发送战术地图 descriptor session={} {}x{} preview={}",
+                player.getGameProfile().getName(), descriptor.session(),
+                descriptor.width(), descriptor.height(), descriptor.maxLevel());
+        }
+    }
+
+    public static void sendToPlayer(ServerPlayer player) {
+        sendDescriptorOnly(player);
+        TacticalMapTileService.Descriptor descriptor =
+            TacticalMapTileService.get().descriptor();
+        if (player != null && descriptor.present()) {
+            TacticalMapTileService.get().enqueuePreviewOnce(player.getUUID());
         }
     }
 
     public static void broadcastToAll() {
+        TacticalMapTileService.Descriptor descriptor =
+            TacticalMapTileService.get().descriptor();
+        // PacketDistributor.ALL 与战术地图 JSON 配置走同一条已验证可达的本地/远程通道。
         NetworkHandler.INSTANCE.send(
             PacketDistributor.ALL.noArg(),
-            new SyncTacticalMapBackgroundMessage(
-                TacticalMapTileService.get().descriptor()));
+            new SyncTacticalMapBackgroundMessage(descriptor));
+        var server = net.minecraftforge.server.ServerLifecycleHooks.getCurrentServer();
+        if (server == null || !descriptor.present()) {
+            return;
+        }
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            TacticalMapTileService.get().enqueuePreviewOnce(player.getUUID());
+        }
     }
 }

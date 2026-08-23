@@ -83,8 +83,9 @@ public class ReinforcementsHUD implements IGuiOverlay {
         // 绘制队伍名称和兵力数量
         Minecraft minecraft = Minecraft.getInstance();
         
-        // 守方信息（左对齐）
-        String defenderText = defenderTeam + ": " + defenderReinforcements;
+        // 守方信息（左对齐）——显示名跟随 AAS/RAAS（进攻方·阵营B 等）
+        String defenderLabel = com.example.espoints.util.EspetroTeamBridge.displayName(defenderTeam);
+        String defenderText = defenderLabel + ": " + defenderReinforcements;
         guiGraphics.drawString(
             minecraft.font,
             defenderText,
@@ -95,7 +96,8 @@ public class ReinforcementsHUD implements IGuiOverlay {
         );
         
         // 攻方信息（右对齐）
-        String attackerText = attackerTeam + ": " + attackerReinforcements;
+        String attackerLabel = com.example.espoints.util.EspetroTeamBridge.displayName(attackerTeam);
+        String attackerText = attackerLabel + ": " + attackerReinforcements;
         guiGraphics.drawString(
             minecraft.font,
             attackerText,

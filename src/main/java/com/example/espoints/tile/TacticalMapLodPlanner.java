@@ -16,13 +16,16 @@ import java.util.Set;
  * new stability window.</p>
  */
 public final class TacticalMapLodPlanner {
-    public static final long STABLE_VIEW_MILLIS = 250L;
+    public static final long STABLE_VIEW_MILLIS = 80L;
     static final long INACTIVE_VIEW_MILLIS = 1_000L;
     private static final int BUDGET_DENOMINATOR = 4;
 
     private Viewport previousViewport;
     private long stableSince;
     private long lastPlanAt = Long.MIN_VALUE;
+    private CacheKey cachedKey;
+    private Plan cachedPlan;
+    private long rebuildCount;
 
     public Plan plan(TacticalMapPyramidLayout layout,
                      MapImageQuality quality,
@@ -34,31 +37,85 @@ public final class TacticalMapLodPlanner {
             throw new IllegalArgumentException("LOD plan arguments must be present");
         }
         updateStability(viewport, nowMillis);
+        return computePlan(layout, quality, viewport, nowMillis,
+            textureBudgetBytes, states);
+    }
 
-        int baseLevel = layout.chooseLevel(
-            viewport.visibleFractionX(), viewport.visibleFractionY(),
-            viewport.screenWidth(), viewport.screenHeight());
-        long refinementBudget = safeFraction(textureBudgetBytes);
-        while (baseLevel < layout.maxLevel()
-            && visibleLayerBytes(layout, viewport, baseLevel, true) > refinementBudget) {
-            baseLevel++;
+    /**
+     * Event-driven variant used by the HUD. The viewport is quantized to base
+     * tile boundaries, while readiness has an explicit revision supplied by
+     * the texture cache. Identical idle frames return the same immutable plan.
+     */
+    public Plan planCached(TacticalMapPyramidLayout layout,
+                           MapImageQuality quality,
+                           Viewport viewport,
+                           long nowMillis,
+                           long textureBudgetBytes,
+                           long descriptorSession,
+                           long readinessRevision,
+                           TileStateLookup states) {
+        if (layout == null || quality == null || viewport == null || states == null) {
+            throw new IllegalArgumentException("LOD plan arguments must be present");
         }
+        updateStability(viewport, nowMillis);
+        boolean stable = isStable(nowMillis);
+        int baseLevel = chooseBudgetedBaseLevel(
+            layout, viewport, textureBudgetBytes);
+        List<TacticalMapPyramidLayout.TileCoordinate> visible =
+            visibleTiles(layout, viewport, baseLevel);
+        TacticalMapPyramidLayout.TileCoordinate first = visible.get(0);
+        TacticalMapPyramidLayout.TileCoordinate last = visible.get(visible.size() - 1);
+        CacheKey key = new CacheKey(
+            descriptorSession, layout.width(), layout.height(), baseLevel,
+            first.x(), first.y(), last.x(), last.y(),
+            viewport.screenWidth(), viewport.screenHeight(), quality,
+            textureBudgetBytes, readinessRevision, stable);
+        if (key.equals(cachedKey) && cachedPlan != null) {
+            return cachedPlan;
+        }
+        cachedPlan = computePlan(layout, quality, viewport, nowMillis,
+            textureBudgetBytes, states);
+        cachedKey = key;
+        rebuildCount++;
+        return cachedPlan;
+    }
 
+    private Plan computePlan(TacticalMapPyramidLayout layout,
+                             MapImageQuality quality,
+                             Viewport viewport,
+                             long nowMillis,
+                             long textureBudgetBytes,
+                             TileStateLookup states) {
+
+        int baseLevel = chooseBudgetedBaseLevel(layout, viewport, textureBudgetBytes);
+        int arrivalLevel = arrivalLevel(layout, baseLevel);
+        long refinementBudget = safeFraction(textureBudgetBytes);
+
+        List<TacticalMapPyramidLayout.TileCoordinate> arrivalVisible =
+            arrivalLevel > baseLevel
+                ? visibleTiles(layout, viewport, arrivalLevel)
+                : List.of();
         List<TacticalMapPyramidLayout.TileCoordinate> baseVisible =
             visibleTiles(layout, viewport, baseLevel);
         List<TacticalMapPyramidLayout.TileCoordinate> basePrefetch =
             prefetchOnly(layout, viewport, baseLevel, baseVisible);
         List<Layer> layers = new ArrayList<>();
+        if (!arrivalVisible.isEmpty()) {
+            // Cold-cache / WAN: a cheap intermediate layer becomes readable
+            // before multi-hundred-KiB original tiles arrive.
+            layers.add(new Layer(arrivalLevel, arrivalVisible));
+        }
         layers.add(new Layer(baseLevel, baseVisible));
 
         List<TacticalMapPyramidLayout.TileCoordinate> visibleRequests =
-            missingTiles(baseVisible, states);
+            new ArrayList<>(missingTiles(arrivalVisible, states));
+        visibleRequests.addAll(missingTiles(baseVisible, states));
         boolean baseReady = allReady(baseVisible, states);
-        boolean stable = nowMillis >= stableSince
-            && nowMillis - stableSince >= STABLE_VIEW_MILLIS;
+        boolean stable = isStable(nowMillis);
 
         Set<TacticalMapPyramidLayout.TileCoordinate> budgetedTiles =
-            new HashSet<>(baseVisible);
+            new HashSet<>(arrivalVisible);
+        budgetedTiles.addAll(baseVisible);
         budgetedTiles.add(new TacticalMapPyramidLayout.TileCoordinate(
             layout.maxLevel(), 0, 0));
         long estimatedBytes = rgbaBytes(layout, budgetedTiles);
@@ -93,14 +150,55 @@ public final class TacticalMapLodPlanner {
         List<TacticalMapPyramidLayout.TileCoordinate> requests =
             new ArrayList<>(visibleRequests);
         requests.addAll(missingTiles(basePrefetch, states));
+        LinkedHashSet<TacticalMapPyramidLayout.TileCoordinate> desired =
+            new LinkedHashSet<>();
+        for (Layer layer : layers) {
+            desired.addAll(layer.visibleTiles());
+        }
+        desired.addAll(basePrefetch);
         return new Plan(baseLevel, List.copyOf(layers), List.copyOf(requests),
-            stable, estimatedBytes);
+            List.copyOf(desired), stable, estimatedBytes);
     }
 
     public void reset() {
         previousViewport = null;
         stableSince = 0L;
         lastPlanAt = Long.MIN_VALUE;
+        cachedKey = null;
+        cachedPlan = null;
+        rebuildCount = 0L;
+    }
+
+    public long rebuildCount() {
+        return rebuildCount;
+    }
+
+    private boolean isStable(long nowMillis) {
+        return nowMillis >= stableSince
+            && nowMillis - stableSince >= STABLE_VIEW_MILLIS;
+    }
+
+    /** One cheaper LOD above the target, never the whole-map preview. */
+    public static int arrivalLevel(TacticalMapPyramidLayout layout, int targetLevel) {
+        if (layout == null || targetLevel < 0 || targetLevel >= layout.maxLevel()) {
+            return targetLevel;
+        }
+        int arrival = Math.min(layout.maxLevel(), targetLevel + 2);
+        return arrival >= layout.maxLevel() ? targetLevel : arrival;
+    }
+
+    private static int chooseBudgetedBaseLevel(
+            TacticalMapPyramidLayout layout, Viewport viewport,
+            long textureBudgetBytes) {
+        int baseLevel = layout.chooseLevel(
+            viewport.visibleFractionX(), viewport.visibleFractionY(),
+            viewport.screenWidth(), viewport.screenHeight());
+        long refinementBudget = safeFraction(textureBudgetBytes);
+        while (baseLevel < layout.maxLevel()
+            && visibleLayerBytes(layout, viewport, baseLevel, true) > refinementBudget) {
+            baseLevel++;
+        }
+        return baseLevel;
     }
 
     private void updateStability(Viewport viewport, long nowMillis) {
@@ -215,6 +313,14 @@ public final class TacticalMapLodPlanner {
 
     public record Plan(int baseLevel, List<Layer> layers,
                        List<TacticalMapPyramidLayout.TileCoordinate> requests,
+                       List<TacticalMapPyramidLayout.TileCoordinate> desiredTiles,
                        boolean stable, long estimatedRgbaBytes) {
+    }
+
+    private record CacheKey(
+        long descriptorSession, int sourceWidth, int sourceHeight, int baseLevel,
+        int minTileX, int minTileY, int maxTileX, int maxTileY,
+        int screenWidth, int screenHeight, MapImageQuality quality,
+        long textureBudgetBytes, long readinessRevision, boolean stable) {
     }
 }

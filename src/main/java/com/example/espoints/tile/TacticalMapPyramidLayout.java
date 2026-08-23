@@ -96,18 +96,27 @@ public final class TacticalMapPyramidLayout {
         if (ring < 0 || ring > 2) {
             throw new IllegalArgumentException("Invalid tile prefetch ring");
         }
-        double clampedMinX = clampFraction(Math.min(minX, maxX));
-        double clampedMaxX = clampFraction(Math.max(minX, maxX));
-        double clampedMinY = clampFraction(Math.min(minY, maxY));
-        double clampedMaxY = clampFraction(Math.max(minY, maxY));
+        int width = levelWidth(level);
+        int height = levelHeight(level);
+        double epsilon = 1.0D / Math.max(width, height);
+        double clampedMinX = clampFraction(Math.min(minX, maxX) - epsilon);
+        double clampedMaxX = clampFraction(Math.max(minX, maxX) + epsilon);
+        double clampedMinY = clampFraction(Math.min(minY, maxY) - epsilon);
+        double clampedMaxY = clampFraction(Math.max(minY, maxY) + epsilon);
         int minTileX = Math.max(0,
-            (int) Math.floor(clampedMinX * levelWidth(level) / TILE_SIZE) - ring);
+            (int) Math.floor(clampedMinX * width / TILE_SIZE) - ring);
         int maxTileX = Math.min(columns(level) - 1,
-            maximumTile(clampedMaxX, levelWidth(level)) + ring);
+            (int) Math.ceil(clampedMaxX * width / TILE_SIZE) - 1 + ring);
         int minTileY = Math.max(0,
-            (int) Math.floor(clampedMinY * levelHeight(level) / TILE_SIZE) - ring);
+            (int) Math.floor(clampedMinY * height / TILE_SIZE) - ring);
         int maxTileY = Math.min(rows(level) - 1,
-            maximumTile(clampedMaxY, levelHeight(level)) + ring);
+            (int) Math.ceil(clampedMaxY * height / TILE_SIZE) - 1 + ring);
+        if (maxTileX < minTileX) {
+            maxTileX = minTileX;
+        }
+        if (maxTileY < minTileY) {
+            maxTileY = minTileY;
+        }
         List<TileCoordinate> result = new ArrayList<>();
         for (int y = minTileY; y <= maxTileY; y++) {
             for (int x = minTileX; x <= maxTileX; x++) {
@@ -115,6 +124,40 @@ public final class TacticalMapPyramidLayout {
             }
         }
         return result;
+    }
+
+    /** True when the tile set is a solid rectangle that covers the viewport. */
+    public boolean tilesCover(int level, List<TileCoordinate> tiles,
+                              double minX, double minY, double maxX, double maxY) {
+        if (tiles == null || tiles.isEmpty() || !isValid(level, 0, 0)) {
+            return false;
+        }
+        int minTileX = Integer.MAX_VALUE;
+        int maxTileX = Integer.MIN_VALUE;
+        int minTileY = Integer.MAX_VALUE;
+        int maxTileY = Integer.MIN_VALUE;
+        for (TileCoordinate tile : tiles) {
+            if (tile == null || tile.level() != level) {
+                return false;
+            }
+            minTileX = Math.min(minTileX, tile.x());
+            maxTileX = Math.max(maxTileX, tile.x());
+            minTileY = Math.min(minTileY, tile.y());
+            maxTileY = Math.max(maxTileY, tile.y());
+        }
+        int expected = (maxTileX - minTileX + 1) * (maxTileY - minTileY + 1);
+        if (tiles.size() != expected) {
+            return false;
+        }
+        double left = minTileX * (double) TILE_SIZE / levelWidth(level);
+        double top = minTileY * (double) TILE_SIZE / levelHeight(level);
+        double right = (maxTileX * (double) TILE_SIZE
+            + tileWidth(level, maxTileX)) / (double) levelWidth(level);
+        double bottom = (maxTileY * (double) TILE_SIZE
+            + tileHeight(level, maxTileY)) / (double) levelHeight(level);
+        double epsilon = 1.0D / Math.max(levelWidth(level), levelHeight(level));
+        return left <= minX + epsilon && top <= minY + epsilon
+            && right >= maxX - epsilon && bottom >= maxY - epsilon;
     }
 
     private void checkedLevel(int level) {

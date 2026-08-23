@@ -18,7 +18,7 @@ class TileTransferLimiterTest {
         long now = 10_000L;
 
         assertTrue(limiter.allow(
-            player, 2 * 1024 * 1024, now, playerRate, globalRate));
+            player, 512 * 1024, now, playerRate, globalRate));
         assertFalse(limiter.allow(player, 1, now, playerRate, globalRate));
         assertTrue(limiter.allow(
             player, 256 * 1024, now + 1_000L, playerRate, globalRate));
@@ -27,11 +27,33 @@ class TileTransferLimiterTest {
     }
 
     @Test
-    void rejectsPayloadLargerThanBoundedBurst() {
+    void firstGlanceAllowsAnOpeningBurstThenReturnsToAverage() {
         TileTransferLimiter limiter = new TileTransferLimiter();
+        UUID player = UUID.randomUUID();
+        long playerRate = 256L * 1024L;
+        long globalRate = 4L * 1024L * 1024L;
+        limiter.grantFirstGlance(player, 1L);
+        assertTrue(limiter.allow(player, 1536 * 1024, 1L, playerRate, globalRate));
+        assertFalse(limiter.allow(player, 1, 1L, playerRate, globalRate));
+        assertTrue(limiter.allow(
+            player, 256 * 1024, 1L + 3_000L, playerRate, globalRate));
+    }
+
+    @Test
+    void oversizedLegalTileSendsOnlyFromAFullPlayerBurst() {
+        TileTransferLimiter limiter = new TileTransferLimiter();
+        UUID player = UUID.randomUUID();
+        long playerRate = 256L * 1024L;
+        long globalRate = 4L * 1024L * 1024L;
+        int oversized = 512 * 1024 + 1;
+
+        assertTrue(limiter.allow(player, oversized, 1L, playerRate, globalRate));
+        assertFalse(limiter.allow(player, oversized, 1L, playerRate, globalRate));
+        assertFalse(limiter.allow(player, oversized, 1L + 500L, playerRate, globalRate));
+        assertTrue(limiter.allow(player, oversized, 1L + 2_000L, playerRate, globalRate));
         assertFalse(limiter.allow(
-            UUID.randomUUID(), 2 * 1024 * 1024 + 1, 1L,
-            256L * 1024L, 4L * 1024L * 1024L));
+            player, TacticalMapTileService.MAX_ENCODED_TILE_BYTES + 1,
+            1L + 4_000L, playerRate, globalRate));
     }
 
     @Test
@@ -52,7 +74,7 @@ class TileTransferLimiterTest {
                 }
             }
         }
-        assertTrue(acceptedAtOnce <= 128);
+        assertTrue(acceptedAtOnce <= 32);
         assertFalse(limiter.allow(
             subscribers[0], tileBytes, now, playerRate, globalRate));
 

@@ -11,8 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NetworkDirectionDeclarationTest {
     @Test
-    void protocolThirteenDeclaresDirectionForEveryRegisteredPacket() throws Exception {
-        assertEquals("13", NetworkHandler.PROTOCOL_VERSION);
+    void protocolFifteenDeclaresDirectionForEveryRegisteredPacket() throws Exception {
+        assertEquals("15", NetworkHandler.PROTOCOL_VERSION);
         Path source = Path.of(System.getProperty("user.dir"),
             "src/main/java/com/example/espoints/network/NetworkHandler.java");
         List<String> registrations = Files.readAllLines(source).stream()

@@ -28,16 +28,26 @@ HCR AAD 现在把“客户端显示设置”和“地图规则”分开：
 | `minecraft_version` | `1.20.1` | 目标游戏版本 |
 | `forge_version` | `47.4.20` | Forge 开发版本 |
 | `mod_id` | `espoints` | 模组 ID |
-| `mod_version` | `1.1.0-final` | HCR AAD 构建版本 |
-| `espetro_version` | `1.1.0-alpha` | Espetro 编译和运行最低版本 |
+| `mod_version` | `1.1.1b` | HCR AAD 构建版本 |
+| `espetro_version` | `1.1.3-i` | Espetro 编译和运行精确版本 |
 | `pingwheel_version` | `1.12.1` | 客户端和服务器强制安装的 Ping Wheel 兼容版本 |
-| `auratip_version` | `1.1.1-beta` | 战术轮盘强制依赖 |
+| `auratip_version` | `1.1.3-beta-espetro.1` | 战术轮盘精确强制依赖 |
 | `oelib_version` | `0.2.4` | AuraTip 运行时强制依赖 |
+| `tetrachord_version` | `1.20+1.0.3` | 客户端与服务器精确硬前置 |
 | `mod_group_id` | `com.example.espoints` | Maven group |
 
-客户端和服务器都需要 Espetro、HCR AAD、MUtil、Ping Wheel 1.12.1、AuraTip 与 OELib。
+客户端和服务器都需要 Espetro、HCR AAD、Tetrachord Lib 1.20+1.0.3、MUtil、
+Ping Wheel 1.12.1、AuraTip 与 OELib。
 这些运行要求均在 `mods.toml` 声明。普通 GUI 使用 MUtil，战术类型轮盘使用 AuraTip，
 世界射线与 3D 标点显示复用 Ping Wheel。
+
+Tetrachord 制品从 `dev/Forge-1.20.X` 的固定提交
+`7783bce06bf0d9264df7b1c9edb8fe5aabfa6ea1` 构建；JAR SHA-256 为
+`6417a7b620fa46382809214adf4dbe25fa3e9d5f7a361e54783134afd19e5feb`。Gradle 只从该
+checkout 的 `build/libs` 或由同一 checkout 发布到 Maven Local 的精确坐标解析；不默认下载
+无法证明提交来源的同名远程文件。当前地图热点继续
+使用 O(1) map、区块索引和小集合线性扫描，因为尚无主指标改善至少 15% 且内存/延迟不退化的
+基准证据，不能仅为“使用前置”强行换成 KDTree。
 
 ## `espoints-common.toml`
 
@@ -59,11 +69,19 @@ HCR AAD 现在把“客户端显示设置”和“地图规则”分开：
 
 | 字段 | 默认 | 范围 | 说明 |
 | --- | ---: | ---: | --- |
-| `checkInterval` | 5 | 1..100 tick | 据点检测间隔；越小响应越快、CPU 开销越高 |
+| `checkInterval` | 5 | 1..100 tick | 据点检测间隔；进度按实际 elapsed tick 积分，1/5/40/100 都保持旧 40 tick 规则的墙钟速度 |
 | `tacticalMapServerMemoryMiB` | 32 | 8..512 MiB | 服务端编码瓦片 LRU |
 | `tacticalMapDiskCacheMiB` | 512 | 64..4096 MiB | `config/espoints/cache/tactical-map/` 磁盘预算 |
 | `tacticalMapPlayerTransferKiBps` | 256 | 32..4096 KiB/s | 单玩家瓦片平均传输预算 |
 | `tacticalMapGlobalTransferKiBps` | 4096 | 256..65536 KiB/s | 全服瓦片平均传输预算 |
+
+战术地图服务端按玩家轮询发送：每玩家最多等待 64 个 tile key、全服最多 4096 个，队列不持有
+PNG 大数组；每玩家和全局 burst 默认不超过对应平均速率的 2 秒额度（256 KiB/s → 512 KiB，
+4 MiB/s → 8 MiB）。单张合法 PNG 若大于玩家 burst、但不超过 2 MiB 硬帽，会等到该玩家
+burst 桶加满后再发送并抽空该桶，而不是永久拒绝。客户端本地 desired set 上限
+256，实际 network outstanding 默认 32，每 tick 最多发 4 个请求。PNG decode 队列上限 32、
+等待 GPU upload 上限 24；render thread 每 tick 最多上传 2 张，并在启动下一张前检查 2 ms 软预算。
+协议仍为 13，请求包没有 priority/purpose 字段；优先级由客户端按 preview、可见 tile、邻环分批发包表达。
 
 ### Reward Settings
 
@@ -105,7 +123,7 @@ mapImageQuality = "BALANCED"
 | `attackerProgressBarColor` | `#FF5500` | `#RRGGBB` |
 | `defenderProgressBarColor` | `#0055FF` | `#RRGGBB` |
 | `tileTextureCacheMiB` | `64` | 16..512 MiB；高级瓦片纹理 LRU，低级预览跨开关保留 |
-| `mapImageQuality` | `BALANCED` | `PERFORMANCE`、`BALANCED` 或 `HIGH`；平衡/高清在视野稳定 250 ms 后分别渐进细化一/两层 |
+| `mapImageQuality` | `BALANCED` | `PERFORMANCE`、`BALANCED` 或 `HIGH`；平衡/高清在视野稳定 250 ms 后分别渐进细化一/两层。低清预览和非整数像素缩放使用平滑采样，精确整数比例使用锐利采样；建议性能较好的客户端选择 `HIGH` |
 
 所有 HCR AAD 配置页和游戏内窗口都以 MUtil 构建。界面更新采用稳定布局刷新，不再依赖逐帧淡入层。
 

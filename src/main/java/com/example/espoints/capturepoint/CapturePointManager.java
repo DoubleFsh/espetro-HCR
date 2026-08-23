@@ -6,6 +6,7 @@ import com.example.espoints.network.SyncBastionsMessage;
 import com.example.espoints.network.SyncCapturePointsMessage;
 import com.example.espoints.network.SyncPlayerIdentityMessage;
 import com.example.espoints.network.SyncPlayerPositionsMessage;
+import com.example.espoints.objective.ObjectiveLayout;
 import com.example.espoints.util.EspetroTeamBridge;
 import com.example.espoints.util.ModLogger;
 import com.example.espoints.integration.OptionalPointsIntegration;
@@ -72,9 +73,8 @@ public class CapturePointManager {
     // 存储据点失去占领状态的时间，用于防止刷分，键为据点名称，值为失去占领状态的时间（毫秒）
     private final Map<String, Long> lastLostCaptureTime = new ConcurrentHashMap<>();
     
-    // 据点状态检查间隔（2s）
+    // 据点状态检查计时器；触发间隔由 checkInterval 配置，结算使用真实累计 tick。
     private int captureCheckTimer = 0;
-    private static final int CHECK_INTERVAL = 40;
     // 无状态变化时全量同步的兜底间隔（约 4s，独立于 captureCheckTimer）
     private int captureSyncFallbackTimer = 0;
     private static final int CAPTURE_SYNC_FALLBACK_INTERVAL = 80;
@@ -98,6 +98,24 @@ public class CapturePointManager {
     private static final int BASTION_SYNC_INTERVAL = 40;
     /** 进攻方占完当前批次全部据点时，通过 Espetro 增加的兵力；JSON 可配置。 */
     private int attackBatchCompletionReinforcement = 200;
+    /**
+     * RAAS 对向推线模式。
+     * 全点中立开局；双方各有前线阶段；可见性=已占∪next；前线重合后全图可见；
+     * 一方占齐全部争夺点后对敌方每秒扣兵。
+     */
+    private boolean raasFrontline;
+    /** RAAS 每次占领成功发给占领方的兵力。 */
+    private int captureReinforcement = 50;
+    /** 一方占齐全部争夺点后，对方每秒扣除的兵力。 */
+    private int ticketBleedPerSecond = 1;
+    /** 阵营A（ATTACK）当前前线阶段（1-based batch）。 */
+    private int attackFrontStage = 1;
+    /** 阵营B（DEFEND）当前前线阶段（1-based batch）。 */
+    private int defendFrontStage = 1;
+    /** 双方前线重合后本局保持全可见。 */
+    private boolean raasFogLifted;
+    private int raasBleedTickCounter;
+    private final List<String> pendingRaasCapturingTeams = new ArrayList<>();
     private static final String ESPETRO_MOD_ID = "espetro";
     private static final String ESPETRO_TROOP_COUNT_MANAGER_CLASS = "org.espetro.team.TroopCountManager";
     private static final String ESPETRO_BASTION_MANAGER_CLASS = "org.espetro.bastion.BastionManager";
@@ -264,6 +282,9 @@ public class CapturePointManager {
     public void clearPlannedCapturePoints() {
         plannedPointsMap.clear();
         operationPointSnapshots.clear();
+        pendingRaasCapturingTeams.clear();
+        raasFrontline = false;
+        captureReinforcement = 50;
         ModLogger.info("所有计划据点已清空");
     }
     
@@ -468,10 +489,18 @@ public class CapturePointManager {
      */
     public CapturePoint checkPlayerInCapturePoint(Player player) {
         BlockPos playerPos = player.blockPosition();
+        String team = player instanceof ServerPlayer serverPlayer
+            ? EspetroTeamBridge.getServerPlayerTeam(serverPlayer)
+            : null;
         for (CapturePoint point : capturePointSpatialIndex.candidates(playerPos)) {
-            // 行动模式下只检查当前批次的据点
-            if (operationModeRunning && point.getBatch() != currentBatch) {
-                continue;
+            if (operationModeRunning) {
+                if (raasFrontline) {
+                    if (!canTeamSeeOrInteract(team, point)) {
+                        continue;
+                    }
+                } else if (point.getBatch() != currentBatch) {
+                    continue;
+                }
             }
             if (point.isPositionInside(playerPos)) {
                 return point;
@@ -718,6 +747,12 @@ public class CapturePointManager {
         String canonicalLoser = EspetroTeamBridge.canonicalizeTeamName(loserTeam);
         
         ModLogger.info("行动结束：" + canonicalWinner + " 胜利，" + canonicalLoser + " 失败");
+
+        try {
+            EspetroAPI.notifyObjectiveVictory(canonicalWinner);
+        } catch (Throwable t) {
+            ModLogger.warn("通知 Espetro 据点胜利失败: " + t.getMessage());
+        }
         
         // 发送停止音频的消息，让音频在5秒内逐渐减小音量到停止播放
         com.example.espoints.network.PlayLowReinforcementAudioMessage.broadcastToAll(false);
@@ -770,6 +805,11 @@ public class CapturePointManager {
         this.endBehavior = endBehavior.toLowerCase();
         operationModeRunning = true;
         operationPointSnapshots.clear();
+        pendingRaasCapturingTeams.clear();
+        raasFogLifted = false;
+        raasBleedTickCounter = 0;
+        attackFrontStage = 1;
+        defendFrontStage = Math.max(1, this.totalBatches);
         
         // 重置所有队伍的兵力，将当前兵力恢复为初始兵力
         for (String team : teamInitialReinforcements.keySet()) {
@@ -791,10 +831,14 @@ public class CapturePointManager {
         // 清空现有据点，准备按计划创建
         clearAllCapturePoints();
         
-        // 创建当前批次的据点
+        // 创建当前批次的据点（RAAS 创建全部阶段）
         createCurrentBatchPoints();
         
-        ModLogger.info("行动模式已启动，当前批次：" + currentBatch + ", 总批数：" + totalBatches + ", 结束行为：" + this.endBehavior);
+        ModLogger.info("行动模式已启动，当前批次：" + currentBatch + ", 总批数：" + totalBatches
+            + ", 结束行为：" + this.endBehavior
+            + (raasFrontline
+                ? ("，RAAS 前线 A=" + attackFrontStage + " B=" + defendFrontStage)
+                : ""));
         
         // 同步到客户端
         syncOperationModeToClients();
@@ -813,28 +857,25 @@ public class CapturePointManager {
         // 统计创建的据点数量
         int createdCount = 0;
         
-        // 遍历所有计划据点，筛选出当前批次的据点
+        // AAS：仅当前批次；RAAS：创建全部阶段据点（中立）。
         for (PlannedCapturePoint plannedPoint : plannedPointsMap.values()) {
-            if (plannedPoint.getBatch() == currentBatch) {
-                // 创建新的据点实例，但暂时不同步到客户端
-                CapturePoint point = createCapturePointObjectForBatch(plannedPoint);
-                if (point != null) {
-                    // 添加到据点映射
-                    capturePoints.put(point.getName(), point);
-                    ModLogger.info("已创建批次 " + currentBatch + " 的据点：" + point.getName());
-                    
-                    // 如果有防守方队伍，设置据点初始状态为已被防守方占领
-                    if (defenderTeam != null && !defenderTeam.isEmpty()) {
-                        // 直接设置据点状态为已占领，占领者为防守方
-                        point.setCaptorName(defenderTeam);
-                        point.setProgress(100);
-                        point.setState(CaptureState.CAPTURED);
-                        // 设置显示状态为已占领，确保HUD正确显示
-                        point.setDisplayState(DisplayState.CAPTURED);
-                        ModLogger.info("据点 " + point.getName() + " 已默认归防守方 " + defenderTeam + " 占领");
-                    }
-                    createdCount++;
+            if (!raasFrontline && plannedPoint.getBatch() != currentBatch) {
+                continue;
+            }
+            CapturePoint point = createCapturePointObjectForBatch(plannedPoint);
+            if (point != null) {
+                capturePoints.put(point.getName(), point);
+                ModLogger.info("已创建批次 " + plannedPoint.getBatch() + " 的据点：" + point.getName());
+
+                // AAS 开局归防守方；RAAS 中立开局。
+                if (!raasFrontline && defenderTeam != null && !defenderTeam.isEmpty()) {
+                    point.setCaptorName(defenderTeam);
+                    point.setProgress(100);
+                    point.setState(CaptureState.CAPTURED);
+                    point.setDisplayState(DisplayState.CAPTURED);
+                    ModLogger.info("据点 " + point.getName() + " 已默认归防守方 " + defenderTeam + " 占领");
                 }
+                createdCount++;
             }
         }
         
@@ -852,9 +893,9 @@ public class CapturePointManager {
      */
     private CapturePoint createCapturePointObjectForBatch(PlannedCapturePoint plannedPoint) {
         try {
-            // 检查据点数量是否超过限制
-            if (capturePoints.size() >= 7) {
-                ModLogger.warn("创建据点失败：已达最大据点数量（7个）");
+            int maxPoints = raasFrontline ? ObjectiveLayout.MAX_RAAS_STAGES : 7;
+            if (capturePoints.size() >= maxPoints) {
+                ModLogger.warn("创建据点失败：已达最大据点数量（" + maxPoints + "个）");
                 return null;
             }
             
@@ -889,6 +930,11 @@ public class CapturePointManager {
         operationModeRunning = false;
         currentBatch = 1;
         progressRecoveryTimers.clear();
+        pendingRaasCapturingTeams.clear();
+        raasFogLifted = false;
+        raasBleedTickCounter = 0;
+        attackFrontStage = 1;
+        defendFrontStage = 1;
         
         // 清空所有据点
         clearAllCapturePoints();
@@ -904,6 +950,9 @@ public class CapturePointManager {
      * @return 是否成功进入下一批次
      */
     public boolean nextBatch() {
+        if (raasFrontline) {
+            return false;
+        }
         int nextBatch = currentBatch + 1;
         
         // 检查是否存在下一批次的计划据点
@@ -974,7 +1023,7 @@ public class CapturePointManager {
 
     /**
      * 进攻方占完当前批次全部据点时的兵力增援（Espetro TroopCount）。
-     * 来自 CapturePoints.json 的 attackBatchCompletionReinforcement，默认 200。
+     * 来自据点预设的 attackBatchCompletionReinforcement，默认 200。
      */
     public void setAttackBatchCompletionReinforcement(int amount) {
         this.attackBatchCompletionReinforcement = Math.max(0, amount);
@@ -982,6 +1031,54 @@ public class CapturePointManager {
 
     public int getAttackBatchCompletionReinforcement() {
         return attackBatchCompletionReinforcement;
+    }
+
+    public void setRaasFrontline(boolean raasFrontline) {
+        this.raasFrontline = raasFrontline;
+    }
+
+    public boolean isRaasFrontline() {
+        return raasFrontline;
+    }
+
+    public void setCaptureReinforcement(int amount) {
+        this.captureReinforcement = Math.max(0, amount);
+    }
+
+    public int getCaptureReinforcement() {
+        return captureReinforcement;
+    }
+
+    public void setTicketBleedPerSecond(int amount) {
+        this.ticketBleedPerSecond = Math.max(0, amount);
+    }
+
+    public int getTicketBleedPerSecond() {
+        return ticketBleedPerSecond;
+    }
+
+    public boolean isRaasFogLifted() {
+        return raasFogLifted;
+    }
+
+    /**
+     * RAAS：队伍能否看见/交互该据点。
+     * 雾散后全可见；否则仅「已占领」或「己方前线阶段」的点。
+     */
+    public boolean canTeamSeeOrInteract(String team, CapturePoint point) {
+        if (!raasFrontline || !operationModeRunning || raasFogLifted || point == null) {
+            return true;
+        }
+        String canonical = EspetroTeamBridge.canonicalizeTeamName(team);
+        if (canonical == null) {
+            return false;
+        }
+        if (EspetroTeamBridge.isSameTeam(point.getCaptorName(), canonical)
+            && point.getState() == CaptureState.CAPTURED) {
+            return true;
+        }
+        int front = EspetroTeamBridge.ATTACK.equals(canonical) ? attackFrontStage : defendFrontStage;
+        return point.getBatch() == front;
     }
     
     /**
@@ -1004,6 +1101,11 @@ public class CapturePointManager {
      */
     private void checkBatchProgression(MinecraftServer server) {
         if (server == null) return;
+
+        if (raasFrontline) {
+            checkRaasFrontlineProgression(server);
+            return;
+        }
         
         // 获取当前批次的所有据点
         List<CapturePoint> currentPoints = new ArrayList<>();
@@ -1036,7 +1138,7 @@ public class CapturePointManager {
         
         // 如果所有据点都被进攻方占领，处理批次推进或结束
         if (allCapturedByAttacker) {
-            // 每完成一个批次，给进攻方增加配置的兵力（CapturePoints.json）
+            // 每完成一个批次，给进攻方增加配置的兵力
             int batchReward = Math.max(0, attackBatchCompletionReinforcement);
             if (batchReward > 0 && grantEspetroAttackReinforcement(batchReward)) {
                 ModLogger.info("批次 " + currentBatch + " 完成，已通过 Espetro 兵力接口为进攻方增加 "
@@ -1058,6 +1160,10 @@ public class CapturePointManager {
                         reinforcementText = "本批次无兵力增援（配置为 0）。";
                     } else {
                         reinforcementText = "进攻方获得 " + batchReward + " 兵力增援！";
+                    }
+                    String atkLabel = EspetroTeamBridge.displayName(attackerTeam);
+                    if (reinforcementText.startsWith("进攻方获得")) {
+                        reinforcementText = atkLabel + "获得 " + batchReward + " 兵力增援！";
                     }
                     player.sendSystemMessage(Component.literal("§6[据点] §e第 " + currentBatch + " 批次据点已全部占领！" + reinforcementText));
                 }
@@ -1090,19 +1196,199 @@ public class CapturePointManager {
         }
     }
 
+    private void checkRaasFrontlineProgression(MinecraftServer server) {
+        int amount = Math.max(0, captureReinforcement);
+        for (String team : pendingRaasCapturingTeams) {
+            boolean granted = amount > 0 && grantEspetroTeamReinforcement(team, amount);
+            if (granted) {
+                ModLogger.info("RAAS 据点被 " + team + " 占领，已增援 " + amount + " 兵力");
+            } else if (amount <= 0) {
+                ModLogger.info("RAAS 据点被 " + team + " 占领，captureReinforcement=0，跳过兵力增援");
+            } else {
+                ModLogger.info("RAAS 据点被 " + team + " 占领，未检测到 Espetro，跳过兵力增援");
+            }
+            String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(team);
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                if (canonicalTeam != null
+                    && canonicalTeam.equals(EspetroTeamBridge.getServerPlayerTeam(player))) {
+                    String reinforcementText = granted
+                        ? ("获得 " + amount + " 兵力增援！")
+                        : (amount <= 0 ? "本据点无兵力增援（配置为 0）。" : "未安装 Espetro，跳过兵力增援。");
+                    player.sendSystemMessage(Component.literal("§6[据点] §e占领成功！" + reinforcementText));
+                }
+            }
+        }
+        pendingRaasCapturingTeams.clear();
+
+        updateRaasFrontlines();
+        if (!raasFogLifted && attackFrontStage == defendFrontStage) {
+            raasFogLifted = true;
+            ModLogger.info("RAAS 前线重合于阶段 " + attackFrontStage + "，雾散：全图据点双方可见");
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                player.sendSystemMessage(Component.literal(
+                    "§6[据点] §e双方前线相遇！全图据点已对双方可见。"));
+            }
+            syncToAllClients();
+        }
+    }
+
+    /** 推进/回退双方前线阶段。 */
+    private void updateRaasFrontlines() {
+        int maxStage = Math.max(1, totalBatches);
+        // ATTACK：从 1 向 max 推；占齐当前前线全部点后 +1
+        while (attackFrontStage <= maxStage
+            && stageFullyOwnedBy(attackFrontStage, EspetroTeamBridge.ATTACK)) {
+            if (attackFrontStage >= maxStage) {
+                break;
+            }
+            attackFrontStage++;
+            ModLogger.info("RAAS 阵营A 前线推进至阶段 " + attackFrontStage);
+        }
+        // 失守回退：若更低阶段不再全属己方，前线回到最早失守阶段
+        int attackRetreat = firstMissingOwnedStage(EspetroTeamBridge.ATTACK, 1, attackFrontStage);
+        if (attackRetreat >= 1 && attackRetreat < attackFrontStage) {
+            ModLogger.info("RAAS 阵营A 前线回退至阶段 " + attackRetreat);
+            attackFrontStage = attackRetreat;
+        }
+
+        // DEFEND：从 max 向 1 推；占齐当前前线全部点后 -1
+        while (defendFrontStage >= 1
+            && stageFullyOwnedBy(defendFrontStage, EspetroTeamBridge.DEFEND)) {
+            if (defendFrontStage <= 1) {
+                break;
+            }
+            defendFrontStage--;
+            ModLogger.info("RAAS 阵营B 前线推进至阶段 " + defendFrontStage);
+        }
+        int defendRetreat = firstMissingOwnedStageFromEnd(
+            EspetroTeamBridge.DEFEND, defendFrontStage, maxStage);
+        if (defendRetreat <= maxStage && defendRetreat > defendFrontStage) {
+            ModLogger.info("RAAS 阵营B 前线回退至阶段 " + defendRetreat);
+            defendFrontStage = defendRetreat;
+        }
+    }
+
+    private boolean stageFullyOwnedBy(int stage, String team) {
+        boolean any = false;
+        for (CapturePoint point : capturePoints.values()) {
+            if (point.getBatch() != stage) {
+                continue;
+            }
+            any = true;
+            if (point.getState() != CaptureState.CAPTURED
+                || !EspetroTeamBridge.isSameTeam(point.getCaptorName(), team)) {
+                return false;
+            }
+        }
+        return any;
+    }
+
+    /** 从 low..highInclusive 找第一个未全被 team 占齐的阶段；全占齐则返回 -1。 */
+    private int firstMissingOwnedStage(String team, int low, int highInclusive) {
+        for (int stage = low; stage <= highInclusive; stage++) {
+            if (!stageFullyOwnedBy(stage, team)) {
+                return stage;
+            }
+        }
+        return -1;
+    }
+
+    private int firstMissingOwnedStageFromEnd(String team, int lowInclusive, int high) {
+        for (int stage = high; stage >= lowInclusive; stage--) {
+            if (!stageFullyOwnedBy(stage, team)) {
+                return stage;
+            }
+        }
+        return -1;
+    }
+
+    /** 一方占齐全部争夺点时，对敌方每秒扣兵。 */
+    public void tickRaasTicketBleed() {
+        if (!raasFrontline || !operationModeRunning || ticketBleedPerSecond <= 0) {
+            return;
+        }
+        String owner = raasSoleOwnerOrNull();
+        if (owner == null) {
+            return;
+        }
+        if (++raasBleedTickCounter < 20) {
+            return;
+        }
+        raasBleedTickCounter = 0;
+        String loser = EspetroTeamBridge.ATTACK.equals(owner)
+            ? EspetroTeamBridge.DEFEND
+            : EspetroTeamBridge.ATTACK;
+        grantEspetroTeamReinforcement(loser, -ticketBleedPerSecond);
+    }
+
+    private String raasSoleOwnerOrNull() {
+        if (capturePoints.isEmpty()) {
+            return null;
+        }
+        String owner = null;
+        for (CapturePoint point : capturePoints.values()) {
+            if (point.getState() != CaptureState.CAPTURED) {
+                return null;
+            }
+            String captor = EspetroTeamBridge.canonicalizeTeamName(point.getCaptorName());
+            if (captor == null || captor.isEmpty()) {
+                return null;
+            }
+            if (owner == null) {
+                owner = captor;
+            } else if (!owner.equals(captor)) {
+                return null;
+            }
+        }
+        return owner;
+    }
+
+    private static boolean isSuccessfulCaptureTransition(CaptureState oldState, CaptureState newState) {
+        if (newState != CaptureState.CAPTURED || oldState == CaptureState.CAPTURED) {
+            return false;
+        }
+        return oldState != CaptureState.CONTESTED && oldState != CaptureState.CAPTURING_DOWN;
+    }
+
     private boolean grantEspetroAttackReinforcement(int amount) {
+        return grantEspetroTeamReinforcement(EspetroTeamBridge.ATTACK, amount);
+    }
+
+    private boolean grantEspetroTeamReinforcement(String team, int amount) {
+        if (amount == 0) {
+            return false;
+        }
         if (!ModList.get().isLoaded(ESPETRO_MOD_ID)) {
             return false;
         }
 
-        try {
-            Class<?> managerClass = Class.forName(ESPETRO_TROOP_COUNT_MANAGER_CLASS);
-            Object manager = managerClass.getMethod("getInstance").invoke(null);
-            managerClass.getMethod("modifyAttackTroops", int.class).invoke(manager, amount);
-            return true;
-        } catch (Exception e) {
-            ModLogger.warn("调用 Espetro 兵力接口失败，已跳过进攻方兵力增援: " + e.getMessage());
+        String canonicalTeam = EspetroTeamBridge.canonicalizeTeamName(team);
+        if (canonicalTeam == null) {
             return false;
+        }
+
+        try {
+            EspetroAPI.modifyTeamTroops(canonicalTeam, amount, raasFrontline ? "RAAS capture" : "AAS batch");
+            return true;
+        } catch (Throwable primary) {
+            // Fallback for older Espetro jars that lack modifyTeamTroops.
+            try {
+                Class<?> managerClass = Class.forName(ESPETRO_TROOP_COUNT_MANAGER_CLASS);
+                Object manager = managerClass.getMethod("getInstance").invoke(null);
+                if (EspetroTeamBridge.ATTACK.equals(canonicalTeam)) {
+                    managerClass.getMethod("modifyAttackTroops", int.class).invoke(manager, amount);
+                    return true;
+                }
+                if (EspetroTeamBridge.DEFEND.equals(canonicalTeam)) {
+                    managerClass.getMethod("modifyDefendTroops", int.class).invoke(manager, amount);
+                    return true;
+                }
+                return false;
+            } catch (Exception e) {
+                ModLogger.warn("调用 Espetro 兵力接口失败，已跳过 " + canonicalTeam
+                    + " 兵力增援: " + e.getMessage());
+                return false;
+            }
         }
     }
     
@@ -1337,6 +1623,10 @@ public class CapturePointManager {
      * 先单次扫描战场玩家再分配到各据点，避免 O(据点×全服玩家)。
      */
     public void updateAllCapturePoints(Level level) {
+        updateAllCapturePoints(level, 40);
+    }
+
+    public void updateAllCapturePoints(Level level, int elapsedTicks) {
         try {
             if (!(level instanceof ServerLevel serverLevel)) return;
 
@@ -1363,8 +1653,19 @@ public class CapturePointManager {
                     .computeIfAbsent(playerUUID, ignored -> new ConcurrentHashMap<>());
                 Set<String> stillInside = new HashSet<>();
 
+                String playerTeam = EspetroTeamBridge.getServerPlayerTeam(player);
                 for (CapturePoint point : capturePointSpatialIndex.candidates(pos)) {
                     if (!point.isPositionInside(pos)) {
+                        continue;
+                    }
+                    // RAAS：不可见前线外的点 → 无交互（不参与占领进度）
+                    if (operationModeRunning && raasFrontline
+                        && !canTeamSeeOrInteract(playerTeam, point)) {
+                        continue;
+                    }
+                    // AAS：仅当前批次
+                    if (operationModeRunning && !raasFrontline
+                        && point.getBatch() != currentBatch) {
                         continue;
                     }
                     playersByPoint.get(point.getName()).add(player);
@@ -1397,7 +1698,7 @@ public class CapturePointManager {
                 int oldProgress = point.getProgress();
                 String oldCaptorName = point.getCaptorName();
 
-                point.updateStatus(playersInPoint);
+                point.updateStatus(playersInPoint, elapsedTicks);
                 progressRecoveryTimers.remove(point);
 
                 if (oldState != point.getState()
@@ -1408,6 +1709,9 @@ public class CapturePointManager {
                     if (oldState != CaptureState.CAPTURED && point.getState() == CaptureState.CAPTURED) {
                         String captorName = point.getCaptorName();
                         if (captorName != null && !captorName.isEmpty()) {
+                            if (raasFrontline && isSuccessfulCaptureTransition(oldState, point.getState())) {
+                                pendingRaasCapturingTeams.add(captorName);
+                            }
                             ModLogger.info("占领者 " + captorName + " 占领据点 " + point.getName());
                             long scoreSpamCheckTime = System.currentTimeMillis();
                             Long lastLostTime = lastLostCaptureTime.get(point.getName());
@@ -1566,6 +1870,11 @@ public class CapturePointManager {
         }
 
         String playerTeamName = EspetroTeamBridge.getServerPlayerTeam(player);
+
+        if (raasFrontline) {
+            return getRaasVisiblePointsForTeam(playerTeamName);
+        }
+
         String attackerTeam = getAttackerTeam();
         String defenderTeam = getDefenderTeam();
 
@@ -1578,6 +1887,18 @@ public class CapturePointManager {
         }
 
         return getCurrentBatchSerializablePoints();
+    }
+
+    private List<CapturePoint.SerializableCapturePoint> getRaasVisiblePointsForTeam(String team) {
+        List<CapturePoint.SerializableCapturePoint> points = new ArrayList<>();
+        for (CapturePoint point : capturePoints.values()) {
+            if (canTeamSeeOrInteract(team, point)) {
+                points.add(point.toSerializable());
+            }
+        }
+        points.sort(Comparator.comparingInt((CapturePoint.SerializableCapturePoint point) -> point.batch)
+            .thenComparing(point -> point.name));
+        return points;
     }
 
     private List<CapturePoint.SerializableCapturePoint> getAllPlannedPointsForMap(String defenderTeam) {
@@ -1668,32 +1989,10 @@ public class CapturePointManager {
         );
     }
     
-    /**
-     * 从服务器同步据点数据（完全替换）
-     * @param serializedPoints 序列化的据点列表
-     */
-    @Deprecated(forRemoval = false)
-    public void syncFromServer(List<CapturePoint.SerializableCapturePoint> serializedPoints) {
-        com.example.espoints.client.ClientBattleState.get()
-            .replaceCapturePoints(serializedPoints);
-    }
-
     private void rebuildCapturePointSpatialIndex() {
         capturePointSpatialIndex.rebuild(capturePoints.values());
     }
-    
-    /**
-     * 更新客户端据点数据（增量更新）
-     * @param serializedPoints 序列化的据点列表
-     */
-    @Deprecated(forRemoval = false)
-    public void updateCapturePoints(List<CapturePoint.SerializableCapturePoint> serializedPoints) {
-        com.example.espoints.client.ClientBattleState.get()
-            .replaceCapturePoints(serializedPoints);
-    }
-    
 
-    
     /**
      * 同步玩家位置到战场客户端（不含兵站同步，兵站见 {@link #syncBastionsToBattlefieldPlayers}）。
      */
@@ -2597,6 +2896,18 @@ public class CapturePointManager {
         lastBastionSyncByPlayer.remove(player.getUUID());
         tacticalMapSubscriptions.remove(player.getUUID());
     }
+
+    /** Dimension changes invalidate subscriptions and all per-player tile state. */
+    @SubscribeEvent
+    public void onPlayerChangedDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+        Player player = event.getEntity();
+        UUID playerId = player.getUUID();
+        com.example.espoints.network.RequestTacticalMapTileMessage.clearPlayer(playerId);
+        com.example.espoints.network.RequestRateLimiter.clearPlayer(playerId);
+        tacticalMapSubscriptions.remove(playerId);
+        lastBastionSyncByPlayer.remove(playerId);
+        playerEnterTimeByPoint.remove(playerId);
+    }
     
     /**
      * 处理玩家复活事件
@@ -2636,19 +2947,23 @@ public class CapturePointManager {
             return;
         }
 
+        com.example.espoints.tactical.TacticalMarkerManager.tick();
+        // 瓦片发送不依赖战场维度已挂载：部署界面打开时也必须能把预览发出去。
+        com.example.espoints.tile.TacticalMapTileService.get().tick(server);
+
         Optional<ServerLevel> battlefield = EspetroAPI.getActiveBattlefieldLevel(server);
         if (battlefield.isEmpty()) {
-            // 无活跃战场：只做标点清理（若有），不做位置/据点周期任务
-            com.example.espoints.tactical.TacticalMarkerManager.tick();
             return;
         }
 
-        com.example.espoints.tactical.TacticalMarkerManager.tick();
-
-        if (++captureCheckTimer >= CHECK_INTERVAL) {
+        int configuredCheckInterval = Math.max(1, ModConfig.checkInterval.get());
+        if (++captureCheckTimer >= configuredCheckInterval) {
+            int elapsedTicks = captureCheckTimer;
             captureCheckTimer = 0;
-            updateAllCapturePoints(battlefield.get());
+            updateAllCapturePoints(battlefield.get(), elapsedTicks);
         }
+
+        tickRaasTicketBleed();
 
         if (++playerPositionSyncTimer >= PLAYER_POSITION_SYNC_INTERVAL) {
             playerPositionSyncTimer = 0;

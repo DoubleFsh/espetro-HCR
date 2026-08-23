@@ -189,13 +189,21 @@ public final class EspetroTeamBridge {
 
     public static String displayName(String canonicalTeam) {
         String team = canonicalizeTeamName(canonicalTeam);
+        if (team == null) {
+            return canonicalTeam == null ? "" : canonicalTeam;
+        }
+        try {
+            return EspetroAPI.teamDisplayName(team);
+        } catch (Throwable ignored) {
+            // Fall through for older Espetro without the coupling API.
+        }
         if (ATTACK.equals(team)) {
             return "进攻方";
         }
         if (DEFEND.equals(team)) {
             return "防守方";
         }
-        return canonicalTeam == null ? "" : canonicalTeam;
+        return team;
     }
 
     /** 战术地图着色：金=指挥官 / 紫=本队队长 / 蓝=本队队员 / 白=同阵营其它。 */

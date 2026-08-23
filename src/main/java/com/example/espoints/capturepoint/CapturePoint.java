@@ -25,8 +25,8 @@ public class CapturePoint {
     private DisplayState displayState;   // 当前显示状态
     private String captorName;           // 占领者名称
     private int progress;                // 占领进度 (0-100)
+    private double preciseProgress;      // 按 elapsed tick 积分，避免短检查间隔加速
     private long capturedStateStartTime; // 已占领状态开始时间（用于进度恢复）
-    private static final int PROGRESS_STEP = 5;
     
     // 边界坐标（预计算以提高性能）
     private final int minX, minY, minZ;
@@ -68,6 +68,7 @@ public class CapturePoint {
         this.displayState = DisplayState.NEUTRAL;
         this.captorName = "";
         this.progress = 0;
+        this.preciseProgress = 0.0D;
         this.capturedStateStartTime = 0;
         
         ModLogger.debug("创建据点: " + name + " (批次 " + batch + ") 从 (" + pos1.getX() + "," + pos1.getY() + "," + pos1.getZ() + ") 到 (" + pos2.getX() + "," + pos2.getY() + "," + pos2.getZ() + ")");
@@ -94,27 +95,39 @@ public class CapturePoint {
      * @param playersInPoint 在据点内的玩家列表
      */
     public void updateStatus(List<? extends Player> playersInPoint) {
+        updateStatus(playersInPoint, 40);
+    }
+
+    /**
+     * Updates the state by real elapsed game ticks. Forty ticks preserves the
+     * historical five-point step; any configured sampling interval therefore
+     * has the same wall-clock capture duration.
+     */
+    public void updateStatus(List<? extends Player> playersInPoint, int elapsedTicks) {
+        if (elapsedTicks < 0) {
+            throw new IllegalArgumentException("elapsedTicks must not be negative");
+        }
         try {
             ModLogger.debug("更新据点 " + name + " 状态，当前状态: " + state + ", 玩家数量: " + playersInPoint.size());
             
             switch (state) {
                 case NEUTRAL:
-                    handleNeutralState(playersInPoint);
+                    handleNeutralState(playersInPoint, elapsedTicks);
                     break;
                 case CAPTURING_FLAG:
-                    handleCapturingFlagState(playersInPoint);
+                    handleCapturingFlagState(playersInPoint, elapsedTicks);
                     break;
                 case CONTESTED:
-                    handleContestedState(playersInPoint);
+                    handleContestedState(playersInPoint, elapsedTicks);
                     break;
                 case CAPTURING_CONTESTED:
-                    handleCapturingContestedState(playersInPoint);
+                    handleCapturingContestedState(playersInPoint, elapsedTicks);
                     break;
                 case CAPTURING_DOWN:
-                    handleCapturingDownState(playersInPoint);
+                    handleCapturingDownState(playersInPoint, elapsedTicks);
                     break;
                 case CAPTURED:
-                    handleCapturedState(playersInPoint);
+                    handleCapturedState(playersInPoint, elapsedTicks);
                     break;
             }
             
@@ -130,33 +143,35 @@ public class CapturePoint {
     /**
      * 处理中立状态
      */
-    private void handleNeutralState(List<? extends Player> playersInPoint) {
+    private void handleNeutralState(List<? extends Player> playersInPoint, int elapsedTicks) {
         Map<String, Integer> teamGroups = getTeamGroups(playersInPoint);
         if (teamGroups.isEmpty()) {
             resetToNeutral("据点 " + name + " 保持中立状态，无阵营玩家在点内");
             return;
         }
 
-        pushNeutralProgressByMajority(teamGroups);
+        pushNeutralProgressByMajority(teamGroups, elapsedTicks);
     }
     
     /**
      * 处理升旗状态
      */
-    private void handleCapturingFlagState(List<? extends Player> playersInPoint) {
+    private void handleCapturingFlagState(List<? extends Player> playersInPoint,
+                                          int elapsedTicks) {
         Map<String, Integer> teamGroups = getTeamGroups(playersInPoint);
         if (teamGroups.isEmpty()) {
             resetToNeutral("据点 " + name + " 玩家离开，回到中立状态");
             return;
         }
 
-        pushNeutralProgressByMajority(teamGroups);
+        pushNeutralProgressByMajority(teamGroups, elapsedTicks);
     }
     
     /**
      * 处理争夺状态
      */
-    private void handleContestedState(List<? extends Player> playersInPoint) {
+    private void handleContestedState(List<? extends Player> playersInPoint,
+                                      int elapsedTicks) {
         Map<String, Integer> teamGroups = getTeamGroups(playersInPoint);
         if (teamGroups.isEmpty()) {
             // 玩家全部离开，回到已占领状态
@@ -166,30 +181,32 @@ public class CapturePoint {
             return;
         }
 
-        pushCapturedProgressByMajority(teamGroups);
+        pushCapturedProgressByMajority(teamGroups, elapsedTicks);
     }
     
     /**
      * 处理升旗争夺状态
      */
-    private void handleCapturingContestedState(List<? extends Player> playersInPoint) {
+    private void handleCapturingContestedState(List<? extends Player> playersInPoint,
+                                               int elapsedTicks) {
         Map<String, Integer> teamGroups = getTeamGroups(playersInPoint);
         if (teamGroups.isEmpty()) {
             resetToNeutral("据点 " + name + " 玩家全部离开，回到中立状态");
             return;
         }
 
-        pushNeutralProgressByMajority(teamGroups);
+        pushNeutralProgressByMajority(teamGroups, elapsedTicks);
     }
     
     /**
      * 处理降旗状态
      */
-    private void handleCapturingDownState(List<? extends Player> playersInPoint) {
+    private void handleCapturingDownState(List<? extends Player> playersInPoint,
+                                          int elapsedTicks) {
         Map<String, Integer> teamGroups = getTeamGroups(playersInPoint);
         if (teamGroups.isEmpty()) {
             // 玩家全部离开，根据当前进度决定状态
-            if (progress <= 0) {
+            if (preciseProgress <= 0.0D) {
                 resetToNeutral("据点 " + name + " 玩家离开，进度已耗尽，回到中立状态");
             } else {
                 // 进度还很高，回到已占领状态
@@ -200,13 +217,14 @@ public class CapturePoint {
             return;
         }
 
-        pushCapturedProgressByMajority(teamGroups);
+        pushCapturedProgressByMajority(teamGroups, elapsedTicks);
     }
     
     /**
      * 处理已占领状态
      */
-    private void handleCapturedState(List<? extends Player> playersInPoint) {
+    private void handleCapturedState(List<? extends Player> playersInPoint,
+                                     int elapsedTicks) {
         // 记录已占领状态开始时间
         if (capturedStateStartTime == 0) {
             capturedStateStartTime = System.currentTimeMillis();
@@ -217,7 +235,7 @@ public class CapturePoint {
             // 无玩家在场，保持已占领状态
             ModLogger.debug("据点 " + name + " 无玩家在场，保持已占领状态");
         } else {
-            pushCapturedProgressByMajority(teamGroups);
+            pushCapturedProgressByMajority(teamGroups, elapsedTicks);
         }
         
         // 检查进度是否未满，如果未满且已占领状态持续5秒以上，将进度设置为满
@@ -225,13 +243,14 @@ public class CapturePoint {
             long currentTime = System.currentTimeMillis();
             long duration = currentTime - capturedStateStartTime;
             if (duration >= 5000) { // 5秒
-                progress = 100;
+                setPreciseProgress(100.0D);
                 ModLogger.debug("据点 " + name + " 已占领状态持续5秒，进度自动恢复到100%");
             }
         }
     }
 
-    private void pushNeutralProgressByMajority(Map<String, Integer> teamGroups) {
+    private void pushNeutralProgressByMajority(Map<String, Integer> teamGroups,
+                                               int elapsedTicks) {
         String majorityTeam = getMajorityTeam(teamGroups);
         if (majorityTeam == null) {
             state = CaptureState.CAPTURING_CONTESTED;
@@ -244,8 +263,8 @@ public class CapturePoint {
         }
 
         if (EspetroTeamBridge.isSameTeam(majorityTeam, captorName)) {
-            progress = Math.min(progress + PROGRESS_STEP, 100);
-            if (progress >= 100) {
+            changeProgress(1, elapsedTicks);
+            if (preciseProgress >= 100.0D) {
                 captureForTeam(majorityTeam);
             } else {
                 state = CaptureState.CAPTURING_FLAG;
@@ -254,8 +273,8 @@ public class CapturePoint {
             return;
         }
 
-        progress = Math.max(progress - PROGRESS_STEP, 0);
-        if (progress <= 0) {
+        changeProgress(-1, elapsedTicks);
+        if (preciseProgress <= 0.0D) {
             captorName = majorityTeam;
             state = CaptureState.CAPTURING_FLAG;
             ModLogger.debug("据点 " + name + " 原升旗进度被压制清空，多数方切换为 " + majorityTeam);
@@ -265,9 +284,10 @@ public class CapturePoint {
         }
     }
 
-    private void pushCapturedProgressByMajority(Map<String, Integer> teamGroups) {
+    private void pushCapturedProgressByMajority(Map<String, Integer> teamGroups,
+                                                int elapsedTicks) {
         if (captorName == null || captorName.isEmpty()) {
-            pushNeutralProgressByMajority(teamGroups);
+            pushNeutralProgressByMajority(teamGroups, elapsedTicks);
             return;
         }
 
@@ -280,18 +300,18 @@ public class CapturePoint {
         }
 
         if (EspetroTeamBridge.isSameTeam(majorityTeam, captorName)) {
-            progress = Math.min(progress + PROGRESS_STEP, 100);
+            changeProgress(1, elapsedTicks);
             state = CaptureState.CAPTURED;
-            if (progress >= 100) {
+            if (preciseProgress >= 100.0D) {
                 capturedStateStartTime = 0;
             }
             ModLogger.debug("据点 " + name + " 占领方 " + captorName + " 人数占优，恢复进度: " + progress);
             return;
         }
 
-        progress = Math.max(progress - PROGRESS_STEP, 0);
+        changeProgress(-1, elapsedTicks);
         capturedStateStartTime = 0;
-        if (progress <= 0) {
+        if (preciseProgress <= 0.0D) {
             resetToNeutral("据点 " + name + " 被多数方 " + majorityTeam + " 降旗完成，回到中立状态");
         } else {
             state = CaptureState.CAPTURING_DOWN;
@@ -320,7 +340,7 @@ public class CapturePoint {
 
     private void captureForTeam(String teamName) {
         captorName = teamName;
-        progress = 100;
+        setPreciseProgress(100.0D);
         state = CaptureState.CAPTURED;
         capturedStateStartTime = 0;
         ModLogger.info("据点 " + name + " 被占领，占领者: " + captorName);
@@ -328,10 +348,20 @@ public class CapturePoint {
 
     private void resetToNeutral(String reason) {
         state = CaptureState.NEUTRAL;
-        progress = 0;
+        setPreciseProgress(0.0D);
         captorName = "";
         capturedStateStartTime = 0;
         ModLogger.debug(reason);
+    }
+
+    private void changeProgress(int direction, int elapsedTicks) {
+        setPreciseProgress(CaptureProgressIntegrator.advance(
+            preciseProgress, direction, elapsedTicks));
+    }
+
+    private void setPreciseProgress(double value) {
+        preciseProgress = CaptureProgressIntegrator.clamp(value);
+        progress = CaptureProgressIntegrator.display(preciseProgress);
     }
     
     /**
@@ -402,7 +432,7 @@ public class CapturePoint {
         this.captorName = canonicalTeam != null ? canonicalTeam : captorName;
     }
     public int getProgress() { return progress; }
-    public void setProgress(int progress) { this.progress = progress; }
+    public void setProgress(int progress) { setPreciseProgress(progress); }
     
     /**
      * 获取据点信息字符串
@@ -529,6 +559,6 @@ public class CapturePoint {
         this.state = serializable.state;
         this.displayState = serializable.displayState;
         this.captorName = serializable.captorName;
-        this.progress = serializable.progress;
+        setPreciseProgress(serializable.progress);
     }
 }

@@ -1,9 +1,10 @@
 package com.example.espoints.network;
 
-import com.example.espoints.client.ClientTacticalMapTileCache;
 import com.example.espoints.tile.TacticalMapTileService;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.PacketDistributor;
 
@@ -11,6 +12,8 @@ import java.util.function.Supplier;
 
 /** One encoded PNG tile. */
 public final class SyncTacticalMapTileMessage {
+    private static final String CLIENT_CACHE_CLASS =
+        "com.example.espoints.client.ClientTacticalMapTileCache";
     private final long session;
     private final int level;
     private final int x;
@@ -69,14 +72,33 @@ public final class SyncTacticalMapTileMessage {
     public static void handle(SyncTacticalMapTileMessage message,
                               Supplier<NetworkEvent.Context> contextSupplier) {
         NetworkEvent.Context context = contextSupplier.get();
-        context.enqueueWork(() -> {
-            if (context.getDirection().getReceptionSide().isClient()) {
-                ClientTacticalMapTileCache.get().accept(
-                    message.session, message.level, message.x, message.y,
-                    message.width, message.height, message.bytes);
-            }
-        });
+        context.enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
+            () -> () -> runOnClientThread(message)));
         context.setPacketHandled(true);
+    }
+
+    private static void runOnClientThread(SyncTacticalMapTileMessage message) {
+        try {
+            Class<?> minecraft = Class.forName("net.minecraft.client.Minecraft");
+            Object instance = minecraft.getMethod("getInstance").invoke(null);
+            minecraft.getMethod("execute", Runnable.class)
+                .invoke(instance, (Runnable) () -> applyOnClient(message));
+        } catch (ReflectiveOperationException error) {
+            applyOnClient(message);
+        }
+    }
+
+    private static void applyOnClient(SyncTacticalMapTileMessage message) {
+        try {
+            Class<?> type = Class.forName(CLIENT_CACHE_CLASS);
+            Object cache = type.getMethod("get").invoke(null);
+            type.getMethod("accept", long.class, int.class, int.class, int.class,
+                    int.class, int.class, byte[].class)
+                .invoke(cache, message.session, message.level, message.x, message.y,
+                    message.width, message.height, message.bytes);
+        } catch (ReflectiveOperationException error) {
+            throw new IllegalStateException("Unable to apply tactical tile on client", error);
+        }
     }
 
     public static void sendToPlayer(ServerPlayer player, long session,
@@ -91,9 +113,12 @@ public final class SyncTacticalMapTileMessage {
             || bytes.length <= 0 || bytes.length > TacticalMapTileService.MAX_ENCODED_TILE_BYTES) {
             return;
         }
+        SyncTacticalMapTileMessage message = new SyncTacticalMapTileMessage(
+            session, level, x, y, width, height, bytes);
+        if (player.connection != null && player.connection.connection.isMemoryConnection()) {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> runOnClientThread(message));
+        }
         NetworkHandler.INSTANCE.send(
-            PacketDistributor.PLAYER.with(() -> player),
-            new SyncTacticalMapTileMessage(
-                session, level, x, y, width, height, bytes));
+            PacketDistributor.PLAYER.with(() -> player), message);
     }
 }

@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InFlightTaskRegistryTest {
     @Test
@@ -36,6 +37,16 @@ class InFlightTaskRegistryTest {
             return CompletableFuture.completedFuture(new byte[]{2});
         });
         assertEquals(2, starts.get());
+        assertEquals(0, registry.size());
+    }
+
+    @Test
+    void clearCancelsPublishedWaitersBeforeDroppingKeys() {
+        InFlightTaskRegistry<String, byte[]> registry = new InFlightTaskRegistry<>();
+        CompletableFuture<byte[]> source = new CompletableFuture<>();
+        CompletableFuture<byte[]> waiter = registry.getOrStart("tile", () -> source);
+        registry.clear();
+        assertTrue(waiter.isCancelled());
         assertEquals(0, registry.size());
     }
 }

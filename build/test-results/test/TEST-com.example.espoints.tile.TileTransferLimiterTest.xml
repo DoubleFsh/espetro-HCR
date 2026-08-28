@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.espoints.tile.TileTransferLimiterTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-08-28T10:27:55" hostname="cachyos-x8664" time="0.006">
+  <properties/>
+  <testcase name="permitsBoundedLargeTileBurstThenEnforcesConfiguredAverage()" classname="com.example.espoints.tile.TileTransferLimiterTest" time="0.001"/>
+  <testcase name="oversizedLegalTileSendsOnlyFromAFullPlayerBurst()" classname="com.example.espoints.tile.TileTransferLimiterTest" time="0.001"/>
+  <testcase name="firstGlanceAllowsAnOpeningBurstThenReturnsToAverage()" classname="com.example.espoints.tile.TileTransferLimiterTest" time="0.0"/>
+  <testcase name="oneHundredSubscribersRemainBoundByOriginalGlobalTokenBucket()" classname="com.example.espoints.tile.TileTransferLimiterTest" time="0.003"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

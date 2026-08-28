@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-08-28T10:27:55" hostname="cachyos-x8664" time="0.032">
+  <properties/>
+  <testcase name="[1] 1" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.02"/>
+  <testcase name="[2] 5" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.0"/>
+  <testcase name="[3] 40" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.001"/>
+  <testcase name="[4] 100" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.0"/>
+  <testcase name="[1] 1" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.0"/>
+  <testcase name="[2] 5" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.0"/>
+  <testcase name="[3] 40" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.001"/>
+  <testcase name="[4] 100" classname="com.example.espoints.capturepoint.CaptureProgressIntegratorTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

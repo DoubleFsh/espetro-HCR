@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.espoints.tile.FairTileRequestQueueTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-08-28T10:27:55" hostname="cachyos-x8664" time="0.004">
+  <properties/>
+  <testcase name="pickerCanPreferALaterKeyForTheCurrentPlayer()" classname="com.example.espoints.tile.FairTileRequestQueueTest" time="0.001"/>
+  <testcase name="oneHundredPlayersEachReceiveServiceWithinOneRound()" classname="com.example.espoints.tile.FairTileRequestQueueTest" time="0.001"/>
+  <testcase name="duplicateBoundsAndDisconnectAreExact()" classname="com.example.espoints.tile.FairTileRequestQueueTest" time="0.0"/>
+  <testcase name="roundRobinPreventsOnePlayerFromStarvingPeers()" classname="com.example.espoints.tile.FairTileRequestQueueTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

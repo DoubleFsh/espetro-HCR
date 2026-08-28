@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.example.espoints.config.PointsPresetLoaderTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-08-22T16:05:57" hostname="cachyos-x8664" time="0.497">
+<testsuite name="com.example.espoints.config.PointsPresetLoaderTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-08-28T10:27:55" hostname="cachyos-x8664" time="0.017">
   <properties/>
-  <testcase name="selectsOnlyMatchingModeAndIsSeedStable(Path)" classname="com.example.espoints.config.PointsPresetLoaderTest" time="0.491"/>
-  <testcase name="fallsBackToLegacyCapturePoints(Path)" classname="com.example.espoints.config.PointsPresetLoaderTest" time="0.004"/>
-  <system-out><![CDATA[2026-08-23 00:05:58,183 Test worker WARN Advanced terminal features are not available in this environment
-[00:05:58] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
-[00:05:58] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
-[00:05:58] [Test worker/WARN] [co.ex.es.ut.ModLogger/]: [HCR] Points/ 无匹配 AAS 的预设，回退 CapturePoints.json
+  <testcase name="selectsOnlyMatchingModeAndIsSeedStable(Path)" classname="com.example.espoints.config.PointsPresetLoaderTest" time="0.014"/>
+  <testcase name="fallsBackToLegacyCapturePoints(Path)" classname="com.example.espoints.config.PointsPresetLoaderTest" time="0.002"/>
+  <system-out><![CDATA[[18:27:55] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
+[18:27:55] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
+[18:27:55] [Test worker/WARN] [co.ex.es.ut.ModLogger/]: [HCR] Points/ 无匹配 AAS 的预设，回退 CapturePoints.json
 ]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>

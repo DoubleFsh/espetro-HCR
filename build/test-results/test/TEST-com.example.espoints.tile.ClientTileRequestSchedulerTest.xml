@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.espoints.tile.ClientTileRequestSchedulerTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-28T10:27:55" hostname="cachyos-x8664" time="0.003">
+  <properties/>
+  <testcase name="desiredAndOutstandingHaveIndependentHardBounds()" classname="com.example.espoints.tile.ClientTileRequestSchedulerTest" time="0.002"/>
+  <testcase name="responsesFreeWindowAndTimeoutUsesDeterministicBackoff()" classname="com.example.espoints.tile.ClientTileRequestSchedulerTest" time="0.0"/>
+  <testcase name="receivedTileFreesNetworkWindowWithoutDuplicatingDuringDecode()" classname="com.example.espoints.tile.ClientTileRequestSchedulerTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

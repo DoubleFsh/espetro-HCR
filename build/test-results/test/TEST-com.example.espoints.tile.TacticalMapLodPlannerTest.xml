@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.espoints.tile.TacticalMapLodPlannerTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-08-28T10:27:55" hostname="cachyos-x8664" time="0.025">
+  <properties/>
+  <testcase name="cachedPlannerReusesOneModelAcrossOneThousandIdleFrames()" classname="com.example.espoints.tile.TacticalMapLodPlannerTest" time="0.019"/>
+  <testcase name="arrivalLevelSitsTwoStepsAboveTargetAndNeverUsesPreview()" classname="com.example.espoints.tile.TacticalMapLodPlannerTest" time="0.0"/>
+  <testcase name="waitsUntilStableAndViewMovementRestartsStabilityWindow()" classname="com.example.espoints.tile.TacticalMapLodPlannerTest" time="0.001"/>
+  <testcase name="appliesQualityTargetsAfterStableViewAndNeverRefinesPastL0()" classname="com.example.espoints.tile.TacticalMapLodPlannerTest" time="0.001"/>
+  <testcase name="ordersVisibleRequestsBeforeBasePrefetchAndDoesNotRepeatPendingTiles()" classname="com.example.espoints.tile.TacticalMapLodPlannerTest" time="0.001"/>
+  <testcase name="textureBudgetCoarsensFull4kViewButAllowsLocalOriginalTiles()" classname="com.example.espoints.tile.TacticalMapLodPlannerTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

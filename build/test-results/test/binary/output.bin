@@ -1,4 +1,5 @@
-j2026-08-23 00:05:58,183 Test worker WARN Advanced terminal features are not available in this environment
-|[00:05:58] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
-|[00:05:58] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
-z[00:05:58] [Test worker/WARN] [co.ex.es.ut.ModLogger/]: [HCR] Points/ 无匹配 AAS 的预设，回退 CapturePoints.json
+
+j2026-08-28 18:27:55,300 Test worker WARN Advanced terminal features are not available in this environment
+|[18:27:55] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
+|[18:27:55] [Test worker/INFO] [co.ex.es.ut.ModLogger/]: [HCR] Points 预设已选择: raas_b.json (mode=RAAS, candidates=2)
+z[18:27:55] [Test worker/WARN] [co.ex.es.ut.ModLogger/]: [HCR] Points/ 无匹配 AAS 的预设，回退 CapturePoints.json
